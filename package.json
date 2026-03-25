@@ -1,0 +1,36 @@
+{
+  "name": "nanvix-codex",
+  "version": "0.1.0",
+  "description": "Run agentic workloads in Nanvix sandboxes using the GitHub Copilot SDK",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "nanvix-codex": "./bin/nanvix-codex"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "setup": "tsx src/setup.ts",
+    "test": "node --test dist/test/*.test.js",
+    "pretest": "tsc"
+  },
+  "keywords": [
+    "nanvix",
+    "copilot",
+    "sandbox",
+    "agentic",
+    "ai"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}
