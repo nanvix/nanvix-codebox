@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Download Nanvix sandbox binaries
+        run: npm run setup
+
+      - name: Check virtualization support
+        if: runner.os == 'Windows'
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $hypervisorPresent = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent
+          if ($hypervisorPresent) {
+            Write-Host "Hypervisor is present."
+          } else {
+            Write-Warning "No hypervisor detected. Smoke test may fail."
+          }
+
+      # Smoke test requires GH_TOKEN for Copilot auth. Skipped when secrets
+      # are unavailable (e.g. pull requests from forks).
+      - name: Run smoke example
+        if: env.GH_TOKEN != ''
+        id: smoke
+        run: npx nanvix-copilot --verbose "What OS are you running on?" 2>&1 | tee smoke-output.log
+        continue-on-error: true
+        shell: bash
+
+      - name: Display crash logs
+        if: steps.smoke.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::group::Smoke test output"
+          cat smoke-output.log
+          echo "::endgroup::"
+          echo "::group::nanvixd logs"
+          for f in nanvix/logs/nanvixd_*.log; do
+            [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+          done
+          echo "::endgroup::"
+
+      - name: Collect nanvixd crash info (Linux)
+        if: steps.smoke.outcome == 'failure' && runner.os == 'Linux'
+        run: |
+          echo "::group::nanvixd.elf file info"
+          file nanvix/bin/nanvixd.elf
+          echo "::endgroup::"
+          echo "::group::dmesg (last 50 lines)"
+          sudo dmesg --ctime | tail -50
+          echo "::endgroup::"
+          echo "::group::coredump list"
+          coredumpctl list 2>/dev/null || echo "No coredumps found"
+          echo "::endgroup::"
+
+      - name: Collect nanvixd crash info (Windows)
+        if: steps.smoke.outcome == 'failure' && runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "::group::nanvixd.exe file info"
+          Get-Item nanvix\bin\nanvixd.exe | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::Windows Event Log (Application errors, last 20)"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 20 -ErrorAction SilentlyContinue | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::Windows Event Log (System errors, last 20)"
+          Get-WinEvent -FilterHashtable @{LogName='System'; Level=2; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 20 -ErrorAction SilentlyContinue | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::WER crash dumps"
+          Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -ErrorAction SilentlyContinue
+          Write-Host "::endgroup::"
+
+      - name: Upload crash logs
+        if: steps.smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-logs-${{ matrix.os }}
+          path: |
+            smoke-output.log
+            nanvix/logs/
+          if-no-files-found: ignore
+
+      - name: Fail if smoke failed
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
+
+  # Gate job that requires all matrix combinations to pass
+  ci:
+    if: always()
+    needs: [build-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.build-and-test.result }}" != "success" ]]; then
+            echo "One or more jobs failed:"
+            echo "  build-and-test: ${{ needs.build-and-test.result }}"
+            exit 1
+          fi
