@@ -131,7 +131,7 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
     } catch {
         throw new Error(
             `Runtime sysroot not found: ${config.sysrootDir}\n` +
-            `Run "nanvix-codex --setup" to download runtime files.`
+            `Run "nanvix-codebox --setup" to download runtime files.`
         );
     }
 

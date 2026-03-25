@@ -16,11 +16,11 @@ export interface CliArgs {
 }
 
 const HELP_TEXT = `
-nanvix-codex — Run agentic workloads in Nanvix sandboxes
+nanvix-codebox — Run agentic workloads in Nanvix sandboxes
 
 USAGE
-  nanvix-codex [options] <prompt>
-  nanvix-codex --setup
+  nanvix-codebox [options] <prompt>
+  nanvix-codebox --setup
 
 OPTIONS
   --model <name>                 LLM model to use (default: ${DEFAULT_MODEL})
@@ -33,10 +33,10 @@ OPTIONS
   --help                         Show this help message
 
 EXAMPLES
-  nanvix-codex "Write a Python script that prints the first 10 Fibonacci numbers"
-  nanvix-codex --model gpt-4.1 --runtime python "Calculate the first 20 prime numbers"
-  nanvix-codex --runtime javascript "Print the factorial of 12"
-  nanvix-codex --setup
+  nanvix-codebox "Write a Python script that prints the first 10 Fibonacci numbers"
+  nanvix-codebox --model gpt-4.1 --runtime python "Calculate the first 20 prime numbers"
+  nanvix-codebox --runtime javascript "Print the factorial of 12"
+  nanvix-codebox --setup
 `.trim();
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -111,7 +111,7 @@ export function parseArgs(argv: string[]): CliArgs {
             default:
                 if (arg.startsWith("-")) {
                     console.error(`Unknown option: ${arg}`);
-                    console.error('Run "nanvix-codex --help" for usage info.');
+                    console.error('Run "nanvix-codebox --help" for usage info.');
                     process.exit(1);
                 }
                 promptParts.push(arg);

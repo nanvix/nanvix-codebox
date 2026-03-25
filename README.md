@@ -1,4 +1,4 @@
-# nanvix-codex
+# nanvix-codebox
 
 A blazingly fast, sandboxed code execution environment powered by
 [Nanvix](https://github.com/nanvix/nanvix) and the [GitHub Copilot
@@ -18,7 +18,7 @@ For architecture and implementation details, see [doc/design.md](doc/design.md).
 ### 🔑 GitHub Copilot Authentication
 
 The Copilot SDK authenticates through the GitHub CLI. Sign in and install the
-Copilot extension before running nanvix-codex:
+Copilot extension before running nanvix-codebox:
 
 ```sh
 # Authenticate with GitHub
@@ -43,14 +43,14 @@ npm run setup
 npm run build
 
 # Run with a prompt
-npx nanvix-codex "What OS are you running on?"
+npx nanvix-codebox "What OS are you running on?"
 
 # Specify a model
-npx nanvix-codex --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
+npx nanvix-codebox --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
 
 # Specify a runtime
-npx nanvix-codex --runtime python "Print all environment variables"
-npx nanvix-codex --runtime javascript "List files on /"
+npx nanvix-codebox --runtime python "Print all environment variables"
+npx nanvix-codebox --runtime javascript "List files on /"
 ```
 
 > All `npm` and `npx` commands work on both Linux (Bash) and Windows (PowerShell).
@@ -58,7 +58,7 @@ npx nanvix-codex --runtime javascript "List files on /"
 ## ⚙️ CLI Usage
 
 ```text
-nanvix-codex [options] <prompt>
+nanvix-codebox [options] <prompt>
 
 Options:
   --model <name>                 LLM model to use (default: gpt-4.1)

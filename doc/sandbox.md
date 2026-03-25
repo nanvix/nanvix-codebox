@@ -5,7 +5,7 @@ executes inside the microvm.
 
 ## Isolation Model
 
-nanvix-codex runs all generated code inside a **Nanvix microvm** — a lightweight virtual
+nanvix-codebox runs all generated code inside a **Nanvix microvm** — a lightweight virtual
 machine backed by hardware virtualization (KVM on Linux, WHP on Windows). The hypervisor
 boundary provides hardware-enforced isolation:
 
@@ -133,7 +133,7 @@ The CPython sysroot is trimmed during setup to fit within the 128 MB VM memory l
 - **Non-zero exit:** The sandbox exit code is forwarded to the caller. Stderr is captured and
   filtered to remove noisy Nanvix VFS debug logs.
 - **Missing sysroot:** If the runtime sysroot directory does not exist, the sandbox throws an
-  error advising the user to run `nanvix-codex --setup`.
+  error advising the user to run `nanvix-codebox --setup`.
 
 ## Running Code Directly (Without Copilot)
 

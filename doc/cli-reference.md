@@ -3,9 +3,9 @@
 ## Synopsis
 
 ```text
-nanvix-codex [options] <prompt>
-nanvix-codex --setup [--nanvix-home <path>] [--verbose]
-nanvix-codex --help
+nanvix-codebox [options] <prompt>
+nanvix-codebox --setup [--nanvix-home <path>] [--verbose]
+nanvix-codebox --help
 ```
 
 ## Options
@@ -28,7 +28,7 @@ SDK for code generation.
 
 ## Runtime Auto-Detection
 
-When `--runtime` is not specified, nanvix-codex uses regex heuristics to detect whether the
+When `--runtime` is not specified, nanvix-codebox uses regex heuristics to detect whether the
 generated code is Python or JavaScript:
 
 **Python signals:** `import`, `from ... import`, `def`, `class`, `print()`, trailing `:`
@@ -58,54 +58,54 @@ The language with more matching patterns wins. If tied, Python is preferred.
 
 ```bash
 # Basic usage
-nanvix-codex "Print the first 10 Fibonacci numbers"
+nanvix-codebox "Print the first 10 Fibonacci numbers"
 
 # Use a specific model
-nanvix-codex --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
+nanvix-codebox --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
 
 # Force Python runtime
-nanvix-codex --runtime python "Print all environment variables"
+nanvix-codebox --runtime python "Print all environment variables"
 
 # Force JavaScript runtime
-nanvix-codex --runtime javascript "List files on /"
+nanvix-codebox --runtime javascript "List files on /"
 
 # Show the generated code
-nanvix-codex --trace "Calculate the factorial of 20"
+nanvix-codebox --trace "Calculate the factorial of 20"
 
 # Verbose mode (all diagnostic output)
-nanvix-codex --verbose "What OS are you running on?"
+nanvix-codebox --verbose "What OS are you running on?"
 
 # Show performance timing
-nanvix-codex --perf "What OS are you running on?"
+nanvix-codebox --perf "What OS are you running on?"
 
 # Download binaries only
-nanvix-codex --setup
+nanvix-codebox --setup
 
 # Custom Nanvix home directory
-nanvix-codex --nanvix-home /opt/nanvix "Hello world"
+nanvix-codebox --nanvix-home /opt/nanvix "Hello world"
 
 # Setup with custom home
-nanvix-codex --setup --nanvix-home /opt/nanvix
+nanvix-codebox --setup --nanvix-home /opt/nanvix
 ```
 
 **PowerShell (Windows):**
 
 ```powershell
 # Basic usage
-npx nanvix-codex "Print the first 10 Fibonacci numbers"
+npx nanvix-codebox "Print the first 10 Fibonacci numbers"
 
 # Use a specific model
-npx nanvix-codex --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
+npx nanvix-codebox --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
 
 # Force Python runtime
-npx nanvix-codex --runtime python "Print all environment variables"
+npx nanvix-codebox --runtime python "Print all environment variables"
 
 # Show the generated code
-npx nanvix-codex --trace "Calculate the factorial of 20"
+npx nanvix-codebox --trace "Calculate the factorial of 20"
 
 # Download binaries only
-npx nanvix-codex --setup
+npx nanvix-codebox --setup
 
 # Custom Nanvix home directory
-npx nanvix-codex --nanvix-home C:\nanvix "Hello world"
+npx nanvix-codebox --nanvix-home C:\nanvix "Hello world"
 ```

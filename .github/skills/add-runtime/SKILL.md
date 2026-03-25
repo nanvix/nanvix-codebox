@@ -7,7 +7,7 @@ description: "Add a new language runtime to the Nanvix sandbox. Use when: adding
 
 ## Overview
 
-Adding a new runtime to nanvix-codex requires changes across four files and creation of a new sysroot with an eval wrapper. Each runtime runs inside a 128MB microvm with no network or host filesystem access.
+Adding a new runtime to nanvix-codebox requires changes across four files and creation of a new sysroot with an eval wrapper. Each runtime runs inside a 128MB microvm with no network or host filesystem access.
 
 ## Procedure
 

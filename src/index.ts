@@ -44,7 +44,7 @@ async function main(): Promise<void> {
 
     if (!args.prompt) {
         console.error("Error: No prompt provided.");
-        console.error('Run "nanvix-codex --help" for usage info.');
+        console.error('Run "nanvix-codebox --help" for usage info.');
         process.exit(1);
     }
 

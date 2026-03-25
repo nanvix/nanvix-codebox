@@ -1,11 +1,11 @@
 {
-  "name": "nanvix-codex",
+  "name": "nanvix-codebox",
   "version": "0.1.0",
   "description": "Run agentic workloads in Nanvix sandboxes using the GitHub Copilot SDK",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "nanvix-codex": "./bin/nanvix-codex"
+    "nanvix-codebox": "./bin/nanvix-codebox"
   },
   "scripts": {
     "build": "tsc",

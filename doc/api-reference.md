@@ -1,6 +1,6 @@
 # API Reference
 
-This document describes the public TypeScript API exported by nanvix-codex. These modules can
+This document describes the public TypeScript API exported by nanvix-codebox. These modules can
 be imported for programmatic use.
 
 ## Module: `sandbox`

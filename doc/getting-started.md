@@ -1,7 +1,7 @@
 # Getting Started
 
 This guide walks you through installing, configuring, and running your first prompt with
-nanvix-codex.
+nanvix-codebox.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
 ## Authentication
 
 The Copilot SDK authenticates through the GitHub CLI. Sign in and install the Copilot
-extension **once** before using nanvix-codex:
+extension **once** before using nanvix-codebox:
 
 ```bash
 # Authenticate with GitHub
@@ -50,8 +50,8 @@ gh extension install github/gh-copilot
 
 ```bash
 # Clone the repository
-git clone https://github.com/nanvix/nanvix-codex.git
-cd nanvix-codex
+git clone https://github.com/nanvix/nanvix-codebox.git
+cd nanvix-codebox
 
 # Install Node.js dependencies
 npm install
@@ -94,8 +94,8 @@ nanvix/
 ## Running Your First Prompt
 
 ```bash
-# Ask a question — nanvix-codex generates code, runs it in a sandbox, and prints the output
-npx nanvix-codex "What OS are you running on?"
+# Ask a question — nanvix-codebox generates code, runs it in a sandbox, and prints the output
+npx nanvix-codebox "What OS are you running on?"
 ```
 
 The tool:
@@ -109,17 +109,17 @@ The tool:
 
 ```bash
 # Specify a model
-npx nanvix-codex --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
+npx nanvix-codebox --model gpt-4.1 "Solve the Tower of Hanoi for 4 disks"
 
 # Force a specific runtime
-npx nanvix-codex --runtime python "Print all environment variables"
-npx nanvix-codex --runtime javascript "List files on /"
+npx nanvix-codebox --runtime python "Print all environment variables"
+npx nanvix-codebox --runtime javascript "List files on /"
 
 # See the generated code before execution
-npx nanvix-codex --trace "Calculate the first 20 prime numbers"
+npx nanvix-codebox --trace "Calculate the first 20 prime numbers"
 
 # Full verbose output (code + sandbox logs)
-npx nanvix-codex --verbose "Print a multiplication table"
+npx nanvix-codebox --verbose "Print a multiplication table"
 ```
 
 ## Running Tests

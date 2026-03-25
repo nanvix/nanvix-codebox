@@ -1,6 +1,6 @@
 ---
 name: cli-development
-description: "Add, modify, or debug CLI flags and commands for nanvix-codex. Use when: adding new CLI options, changing argument parsing, updating help text, fixing CLI validation, or modifying how flags are consumed downstream."
+description: "Add, modify, or debug CLI flags and commands for nanvix-codebox. Use when: adding new CLI options, changing argument parsing, updating help text, fixing CLI validation, or modifying how flags are consumed downstream."
 ---
 
 # CLI Development

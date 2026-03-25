@@ -10,13 +10,13 @@ and runtime sysroots.
 npm run setup
 
 # Via CLI
-npx nanvix-codex --setup
+npx nanvix-codebox --setup
 
 # With verbose output
-npx nanvix-codex --setup --verbose
+npx nanvix-codebox --setup --verbose
 
 # Custom installation directory
-npx nanvix-codex --setup --nanvix-home /opt/nanvix
+npx nanvix-codebox --setup --nanvix-home /opt/nanvix
 ```
 
 ## What Gets Downloaded
@@ -110,7 +110,7 @@ repositories, set the `GITHUB_TOKEN` environment variable:
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
-npx nanvix-codex --setup
+npx nanvix-codebox --setup
 ```
 
 The token is used for both API metadata requests and binary downloads.

@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the end-to-end architecture of nanvix-codex, from user prompt to
+This document describes the end-to-end architecture of nanvix-codebox, from user prompt to
 sandbox execution result.
 
 ## High-Level Flow
@@ -167,7 +167,7 @@ The project is written in TypeScript and compiled to JavaScript:
 ```text
 src/*.ts  →  tsc  →  dist/src/*.js     (runtime code)
 test/*.ts →  tsc  →  dist/test/*.js    (test code)
-bin/nanvix-codex                       (shebang wrapper, imports dist/src/index.js)
+bin/nanvix-codebox                     (shebang wrapper, imports dist/src/index.js)
 ```
 
 ### Platform Abstraction — `src/platform.ts`
@@ -180,7 +180,7 @@ Provides cross-platform helpers used by the sandbox runner and setup modules:
 
 Guest binaries (Python, QuickJS) always use ELF format regardless of the host platform.
 
-The `bin/nanvix-codex` entry point is a Node.js script that imports the compiled output:
+The `bin/nanvix-codebox` entry point is a Node.js script that imports the compiled output:
 
 ```bash
 #!/usr/bin/env -S node --no-warnings

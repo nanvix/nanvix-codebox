@@ -1,6 +1,6 @@
 ---
 name: testing
-description: "Write, run, or debug tests for nanvix-codex. Use when: adding unit tests, fixing test failures, extending test coverage, writing test cases for CLI parsing, encoding, runtime detection, or any new module."
+description: "Write, run, or debug tests for nanvix-codebox. Use when: adding unit tests, fixing test failures, extending test coverage, writing test cases for CLI parsing, encoding, runtime detection, or any new module."
 ---
 
 # Testing

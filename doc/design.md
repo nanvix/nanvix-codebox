@@ -2,7 +2,7 @@
 
 ## Overview
 
-nanvix-codex is a sandboxed code execution environment that bridges GitHub Copilot's AI code
+nanvix-codebox is a sandboxed code execution environment that bridges GitHub Copilot's AI code
 generation with Nanvix's hypervisor-isolated microvm. Generated code runs inside a lightweight
 VM with **no access to the host machine** — no host filesystem, no network, no host processes.
 The hypervisor boundary provides hardware-enforced isolation (KVM on Linux, WHP on Windows),
