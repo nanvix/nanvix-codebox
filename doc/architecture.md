@@ -74,6 +74,7 @@ Parses `process.argv` into a typed `CliArgs` object. Supports:
 - `--runtime <python|javascript>` — force a specific runtime
 - `--nanvix-home <path>` — path to Nanvix binaries (default: `./nanvix`)
 - `--verbose` / `--trace` — diagnostic output
+- `--perf` — performance timing
 - `--setup` — download binaries and exit
 - `--help` — print usage
 

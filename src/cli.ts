@@ -10,6 +10,7 @@ export interface CliArgs {
     nanvixHome: string;
     verbose: boolean;
     trace: boolean;
+    perf: boolean;
     showHelp: boolean;
     setupMode: boolean;
 }
@@ -27,6 +28,7 @@ OPTIONS
   --nanvix-home <path>           Path to Nanvix binaries (default: ./nanvix)
   --verbose                      Show detailed execution info
   --trace                        Show generated code before sandbox execution
+  --perf                         Show performance timing for each step
   --setup                        Download Nanvix binaries
   --help                         Show this help message
 
@@ -45,6 +47,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let nanvixHome = path.join(process.cwd(), "nanvix");
     let verbose = false;
     let trace = false;
+    let perf = false;
     let showHelp = false;
     let setupMode = false;
     const promptParts: string[] = [];
@@ -65,6 +68,10 @@ export function parseArgs(argv: string[]): CliArgs {
 
             case "--trace":
                 trace = true;
+                break;
+
+            case "--perf":
+                perf = true;
                 break;
 
             case "--setup":
@@ -119,6 +126,7 @@ export function parseArgs(argv: string[]): CliArgs {
         nanvixHome,
         verbose,
         trace,
+        perf,
         showHelp,
         setupMode,
     };

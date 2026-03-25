@@ -65,6 +65,7 @@ Options:
   --runtime <python|javascript>  Runtime to use (default: auto-detect from prompt)
   --verbose                      Show detailed execution info
   --trace                        Show generated code before sandbox execution
+  --perf                         Show performance timing for each step
   --nanvix-home <path>           Path to Nanvix binaries (default: ./nanvix)
   --setup                        Download Nanvix binaries and exit
   --help                         Show help

@@ -17,6 +17,7 @@ nanvix-codex --help
 | `--nanvix-home` | `<path>` | `./nanvix` | Path to Nanvix binaries and sysroots |
 | `--verbose`, `-v` | — | off | Show detailed execution info (sandbox logs, generated code) |
 | `--trace` | — | off | Show generated code before sandbox execution |
+| `--perf` | — | off | Show performance timing for each step |
 | `--setup` | — | — | Download Nanvix binaries and runtime sysroots, then exit |
 | `--help`, `-h` | — | — | Show help message and exit |
 
@@ -73,6 +74,9 @@ nanvix-codex --trace "Calculate the factorial of 20"
 
 # Verbose mode (all diagnostic output)
 nanvix-codex --verbose "What OS are you running on?"
+
+# Show performance timing
+nanvix-codex --perf "What OS are you running on?"
 
 # Download binaries only
 nanvix-codex --setup

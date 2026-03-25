@@ -10,6 +10,8 @@ export interface CopilotOptions {
     runtime?: Runtime;
     /** Whether to print verbose output. */
     verbose?: boolean;
+    /** Whether to collect performance timing. */
+    perf?: boolean;
 }
 
 /**
@@ -41,6 +43,13 @@ function detectRuntime(code: string): Runtime {
     return pythonScore >= jsScore ? "python" : "javascript";
 }
 
+export interface PerfTimings {
+    clientStartMs: number;
+    codeGenerationMs: number;
+    sandboxExecutionMs: number;
+    totalMs: number;
+}
+
 /**
  * Run an agentic workload using the Copilot SDK and execute the
  * generated code in a Nanvix sandbox.
@@ -48,15 +57,19 @@ function detectRuntime(code: string): Runtime {
 export async function runAgenticWorkload(
     prompt: string,
     options: CopilotOptions
-): Promise<{ code: string; runtime: Runtime; result: SandboxResult }> {
-    const { nanvixHome, model, runtime: preferredRuntime, verbose = false } = options;
+): Promise<{ code: string; runtime: Runtime; result: SandboxResult; perf?: PerfTimings }> {
+    const { nanvixHome, model, runtime: preferredRuntime, verbose = false, perf = false } = options;
+
+    const totalStart = performance.now();
 
     if (verbose) {
         console.error("[copilot] Starting Copilot client...");
     }
 
+    const clientStartAt = performance.now();
     const client = new CopilotClient();
     await client.start();
+    const clientStartMs = performance.now() - clientStartAt;
 
     try {
         const session = await client.createSession({
@@ -88,9 +101,11 @@ export async function runAgenticWorkload(
             console.error("[copilot] Sending prompt to Copilot SDK...");
         }
 
+        const codeGenStart = performance.now();
         const response = await session.sendAndWait({
             prompt: agentPrompt,
         });
+        const codeGenerationMs = performance.now() - codeGenStart;
 
         const generatedCode = response?.data?.content?.trim();
         if (!generatedCode) {
@@ -116,14 +131,23 @@ export async function runAgenticWorkload(
             console.error("[copilot] Executing in Nanvix sandbox...");
         }
 
+        const sandboxStart = performance.now();
         const result = await runInSandbox({
             nanvixHome,
             runtime,
             code: cleanedCode,
             verbose,
         });
+        const sandboxExecutionMs = performance.now() - sandboxStart;
 
-        return { code: cleanedCode, runtime, result };
+        const totalMs = performance.now() - totalStart;
+
+        return {
+            code: cleanedCode,
+            runtime,
+            result,
+            ...(perf && { perf: { clientStartMs, codeGenerationMs, sandboxExecutionMs, totalMs } }),
+        };
     } finally {
         await client.stop();
     }

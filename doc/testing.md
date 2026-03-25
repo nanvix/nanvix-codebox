@@ -45,6 +45,7 @@ Tests the CLI argument parser.
 | `should parse --verbose flag` | Boolean flag parsing |
 | `should parse --setup flag` | Setup mode detection |
 | `should parse --help flag` | Help mode detection |
+| `should parse --perf flag` | Performance timing flag parsing |
 | `should parse --nanvix-home flag` | Path resolution for custom Nanvix directory |
 
 #### `platform`

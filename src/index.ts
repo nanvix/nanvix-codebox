@@ -16,8 +16,18 @@ if (major < 22 || (major === 22 && minor < 5)) {
 }
 
 import { parseArgs, printHelp } from "./cli.js";
-import { runAgenticWorkload } from "./copilot.js";
+import { runAgenticWorkload, type PerfTimings } from "./copilot.js";
 import { setup } from "./setup.js";
+
+function printPerfTimings(perf: PerfTimings): void {
+    const fmt = (ms: number) => (ms / 1000).toFixed(2) + "s";
+    console.error("\n--- Performance ---");
+    console.error(`  Copilot client start : ${fmt(perf.clientStartMs)}`);
+    console.error(`  Code generation      : ${fmt(perf.codeGenerationMs)}`);
+    console.error(`  Sandbox execution    : ${fmt(perf.sandboxExecutionMs)}`);
+    console.error(`  Total                : ${fmt(perf.totalMs)}`);
+    console.error("-------------------");
+}
 
 async function main(): Promise<void> {
     const args = parseArgs(process.argv);
@@ -39,11 +49,12 @@ async function main(): Promise<void> {
     }
 
     try {
-        const { code, runtime, result } = await runAgenticWorkload(args.prompt, {
+        const { code, runtime, result, perf } = await runAgenticWorkload(args.prompt, {
             nanvixHome: args.nanvixHome,
             model: args.model,
             runtime: args.runtime,
             verbose: args.verbose,
+            perf: args.perf,
         });
 
         if (args.trace || args.verbose) {
@@ -73,7 +84,14 @@ async function main(): Promise<void> {
                     console.error(meaningful);
                 }
             }
+            if (perf) {
+                printPerfTimings(perf);
+            }
             process.exit(result.exitCode);
+        }
+
+        if (perf) {
+            printPerfTimings(perf);
         }
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

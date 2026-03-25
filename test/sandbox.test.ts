@@ -64,6 +64,12 @@ describe("cli", () => {
         assert.equal(args.showHelp, true);
     });
 
+    it("should parse --perf flag", () => {
+        const args = parseArgs(["node", "index.js", "--perf", "do stuff"]);
+        assert.equal(args.perf, true);
+        assert.equal(args.prompt, "do stuff");
+    });
+
     it("should parse --nanvix-home flag", () => {
         const args = parseArgs(["node", "index.js", "--nanvix-home", "/opt/nanvix", "test"]);
         assert.equal(args.nanvixHome, path.resolve("/opt/nanvix"));
