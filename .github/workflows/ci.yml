@@ -7,32 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  build-and-test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run unit tests
-        run: npm test
-
-  smoke:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,28 +42,25 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build
-        run: npm run build
+      - name: Run unit tests
+        run: npm test
 
       - name: Download Nanvix sandbox binaries
         run: npm run setup
 
       - name: Run smoke example
         run: npx nanvix-codebox "What OS are you running on?"
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
   # Gate job that requires all matrix combinations to pass
   ci:
     if: always()
-    needs: [test, smoke]
+    needs: [build-and-test]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
         run: |
-          if [[ "${{ needs.test.result }}" != "success" || "${{ needs.smoke.result }}" != "success" ]]; then
+          if [[ "${{ needs.build-and-test.result }}" != "success" ]]; then
             echo "One or more jobs failed:"
-            echo "  test:  ${{ needs.test.result }}"
-            echo "  smoke: ${{ needs.smoke.result }}"
+            echo "  build-and-test: ${{ needs.build-and-test.result }}"
             exit 1
           fi
