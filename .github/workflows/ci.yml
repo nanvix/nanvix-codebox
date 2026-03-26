@@ -15,6 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +51,8 @@ jobs:
             Write-Warning "No hypervisor detected. Smoke test may fail."
           }
 
+      # Smoke test requires GH_TOKEN for Copilot auth. Skipped when secrets
+      # are unavailable (e.g. pull requests from forks).
       - name: Run smoke example
         if: env.GH_TOKEN != ''
         id: smoke

@@ -30,7 +30,7 @@ export interface SandboxResult {
     /** Process exit code. */
     exitCode: number;
     /** nanvixd log file content (from the Nanvix logs directory, e.g. ${nanvixHome}/logs), if available. */
-    nanvixdLog: string;
+    nanvixdLog?: string;
 }
 
 /** Eval wrapper script baked into the ramfs during setup. Reads base64 from stdin, decodes, exec()s. */
