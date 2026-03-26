@@ -29,7 +29,7 @@ export interface SandboxResult {
     stderr: string;
     /** Process exit code. */
     exitCode: number;
-    /** nanvixd log file content (from nanvix/logs/), if available. */
+    /** nanvixd log file content (from the Nanvix logs directory, e.g. ${nanvixHome}/logs), if available. */
     nanvixdLog: string;
 }
 
@@ -217,15 +217,26 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
                 const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
                 const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
 
-                // Read any new nanvixd log files produced during this run.
+                // Read any new nanvixd log files produced during this run,
+                // but only when verbose output is requested or the sandbox
+                // exited with a non-zero code.
                 let nanvixdLog = "";
-                try {
-                    const logsAfter = readdirSync(logsDir);
-                    const newLogs = logsAfter.filter((f) => !logsBefore.has(f));
-                    for (const logFile of newLogs) {
-                        nanvixdLog += readFileSync(path.join(logsDir, logFile), "utf-8");
-                    }
-                } catch { /* logs dir may not exist */ }
+                const shouldCollectLogs =
+                    verbose || (exitCode !== null && exitCode !== undefined && exitCode !== 0);
+                if (shouldCollectLogs) {
+                    try {
+                        const logsAfter = readdirSync(logsDir);
+                        const newLogs = logsAfter.filter((f) => !logsBefore.has(f)).sort();
+                        for (const logFile of newLogs) {
+                            const logPath = path.join(logsDir, logFile);
+                            if (nanvixdLog) {
+                                nanvixdLog += "\n";
+                            }
+                            nanvixdLog += `===== ${logFile} =====\n`;
+                            nanvixdLog += readFileSync(logPath, "utf-8");
+                        }
+                    } catch { /* logs dir may not exist */ }
+                }
 
                 if (verbose) {
                     console.error(`[sandbox] exit code: ${exitCode}`);

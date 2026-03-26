@@ -51,6 +51,7 @@ jobs:
           }
 
       - name: Run smoke example
+        if: env.GH_TOKEN != ''
         id: smoke
         run: npx nanvix-codebox --verbose "What OS are you running on?" 2>&1 | tee smoke-output.log
         continue-on-error: true
@@ -109,8 +110,8 @@ jobs:
             nanvix/logs/
           if-no-files-found: ignore
 
-      - name: Fail if smoke failed on Linux
-        if: steps.smoke.outcome == 'failure' && runner.os == 'Linux'
+      - name: Fail if smoke failed
+        if: steps.smoke.outcome == 'failure'
         run: exit 1
 
   # Gate job that requires all matrix combinations to pass
