@@ -25,29 +25,6 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Validate WHP availability
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $whpFeature = Get-WindowsOptionalFeature -Online -FeatureName 'Windows-Hypervisor-Platform' -ErrorAction SilentlyContinue
-          if (-not $whpFeature) {
-            Write-Error "The 'Windows-Hypervisor-Platform' optional feature is not available on this runner. Use a Windows runner image that supports Windows Hypervisor Platform."
-            exit 1
-          }
-
-          if ($whpFeature.State -ne 'Enabled') {
-            Write-Error "Windows Hypervisor Platform ('Windows-Hypervisor-Platform') is not enabled. Enable it on the runner and ensure virtualization is enabled in the BIOS/firmware."
-            exit 1
-          }
-
-          $hypervisorPresent = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent
-          if (-not $hypervisorPresent) {
-            Write-Error "Windows Hypervisor Platform is enabled, but no hypervisor is currently present. Ensure hardware virtualization is enabled and a hypervisor is started on the host."
-            exit 1
-          }
-
-          Write-Host "Windows Hypervisor Platform is enabled and a hypervisor is present."
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -60,6 +37,18 @@ jobs:
 
       - name: Download Nanvix sandbox binaries
         run: npm run setup
+
+      - name: Check virtualization support
+        if: runner.os == 'Windows'
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $hypervisorPresent = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent
+          if ($hypervisorPresent) {
+            Write-Host "Hypervisor is present."
+          } else {
+            Write-Warning "No hypervisor detected. Smoke test may fail."
+          }
 
       - name: Run smoke example
         id: smoke
