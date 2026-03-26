@@ -3,6 +3,7 @@ name: CI
 on:
   schedule:
     - cron: "0 */2 * * *"
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -39,6 +40,12 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+
+      - name: Enable Hyper-V
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor -All -NoRestart
 
       - uses: actions/setup-node@v4
         with:
