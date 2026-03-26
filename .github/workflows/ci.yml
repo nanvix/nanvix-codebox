@@ -50,7 +50,67 @@ jobs:
         run: npm run setup
 
       - name: Run smoke example
-        run: npx nanvix-codebox "What OS are you running on?"
+        id: smoke
+        run: npx nanvix-codebox --verbose "What OS are you running on?" 2>&1 | tee smoke-output.log
+        continue-on-error: true
+        shell: bash
+
+      - name: Display crash logs
+        if: steps.smoke.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::group::Smoke test output"
+          cat smoke-output.log
+          echo "::endgroup::"
+          echo "::group::nanvixd logs"
+          for f in nanvix/logs/nanvixd_*.log; do
+            [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+          done
+          echo "::endgroup::"
+
+      - name: Collect nanvixd crash info (Linux)
+        if: steps.smoke.outcome == 'failure' && runner.os == 'Linux'
+        run: |
+          echo "::group::nanvixd.elf file info"
+          file nanvix/bin/nanvixd.elf
+          echo "::endgroup::"
+          echo "::group::dmesg (last 50 lines)"
+          sudo dmesg --ctime | tail -50
+          echo "::endgroup::"
+          echo "::group::coredump list"
+          coredumpctl list 2>/dev/null || echo "No coredumps found"
+          echo "::endgroup::"
+
+      - name: Collect nanvixd crash info (Windows)
+        if: steps.smoke.outcome == 'failure' && runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "::group::nanvixd.exe file info"
+          Get-Item nanvix\bin\nanvixd.exe | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::Windows Event Log (Application errors, last 20)"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 20 -ErrorAction SilentlyContinue | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::Windows Event Log (System errors, last 20)"
+          Get-WinEvent -FilterHashtable @{LogName='System'; Level=2; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 20 -ErrorAction SilentlyContinue | Format-List
+          Write-Host "::endgroup::"
+          Write-Host "::group::WER crash dumps"
+          Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -ErrorAction SilentlyContinue
+          Write-Host "::endgroup::"
+
+      - name: Upload crash logs
+        if: steps.smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-logs-${{ matrix.os }}
+          path: |
+            smoke-output.log
+            nanvix/logs/
+          if-no-files-found: ignore
+
+      - name: Fail if smoke failed on Linux
+        if: steps.smoke.outcome == 'failure' && runner.os == 'Linux'
+        run: exit 1
 
   # Gate job that requires all matrix combinations to pass
   ci:

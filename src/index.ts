@@ -84,6 +84,11 @@ async function main(): Promise<void> {
                     console.error(meaningful);
                 }
             }
+            if (result.nanvixdLog) {
+                console.error("\n--- nanvixd log ---");
+                console.error(result.nanvixdLog.trim());
+                console.error("--- end nanvixd log ---");
+            }
             if (perf) {
                 printPerfTimings(perf);
             }

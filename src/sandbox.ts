@@ -1,5 +1,5 @@
 import { spawn, execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, accessSync } from "node:fs";
+import { writeFileSync, unlinkSync, accessSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { encodeBase64 } from "./encoding.js";
@@ -29,6 +29,8 @@ export interface SandboxResult {
     stderr: string;
     /** Process exit code. */
     exitCode: number;
+    /** nanvixd log file content (from nanvix/logs/), if available. */
+    nanvixdLog: string;
 }
 
 /** Eval wrapper script baked into the ramfs during setup. Reads base64 from stdin, decodes, exec()s. */
@@ -125,6 +127,16 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
     const mkramfs = hostBinaryPath(absNanvixHome, "mkramfs");
     const config = getRuntimeConfig(runtime, absNanvixHome);
 
+    const logsDir = path.join(absNanvixHome, "logs");
+
+    // Snapshot existing log files so we can identify new ones after execution.
+    let logsBefore: Set<string>;
+    try {
+        logsBefore = new Set(readdirSync(logsDir));
+    } catch {
+        logsBefore = new Set();
+    }
+
     // Verify sysroot exists.
     try {
         accessSync(config.sysrootDir);
@@ -205,10 +217,23 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
                 const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
                 const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
 
+                // Read any new nanvixd log files produced during this run.
+                let nanvixdLog = "";
+                try {
+                    const logsAfter = readdirSync(logsDir);
+                    const newLogs = logsAfter.filter((f) => !logsBefore.has(f));
+                    for (const logFile of newLogs) {
+                        nanvixdLog += readFileSync(path.join(logsDir, logFile), "utf-8");
+                    }
+                } catch { /* logs dir may not exist */ }
+
                 if (verbose) {
                     console.error(`[sandbox] exit code: ${exitCode}`);
                     if (rawStderr) {
                         console.error(`[sandbox] stderr: ${rawStderr}`);
+                    }
+                    if (nanvixdLog) {
+                        console.error(`[sandbox] nanvixd log:\n${nanvixdLog}`);
                     }
                 }
 
@@ -216,6 +241,7 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
                     stdout: rawStdout,
                     stderr: rawStderr,
                     exitCode: exitCode ?? 1,
+                    nanvixdLog,
                 });
             });
 
