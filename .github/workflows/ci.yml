@@ -15,6 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,14 +26,15 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Enable WHP
+      - name: Validate WHP availability
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           if ((Get-CimInstance Win32_ComputerSystem).HypervisorPresent) {
             Write-Host "Hypervisor already present"
           } else {
-            Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart
+            Write-Error "No hypervisor is present and Windows Hypervisor Platform cannot be reliably enabled within this GitHub Actions job. Use a runner with virtualization enabled."
+            exit 1
           }
 
       - uses: actions/setup-node@v4
