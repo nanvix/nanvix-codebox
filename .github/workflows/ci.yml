@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -28,6 +29,7 @@ jobs:
   smoke:
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -41,11 +43,15 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Enable Hyper-V
+      - name: Enable WHP
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor -All -NoRestart
+          if ((Get-CimInstance Win32_ComputerSystem).HypervisorPresent) {
+            Write-Host "Hypervisor already present"
+          } else {
+            Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart
+          }
 
       - uses: actions/setup-node@v4
         with:
@@ -64,3 +70,18 @@ jobs:
         run: npx nanvix-codebox "What OS are you running on?"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+  # Gate job that requires all matrix combinations to pass
+  ci:
+    if: always()
+    needs: [test, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.test.result }}" != "success" || "${{ needs.smoke.result }}" != "success" ]]; then
+            echo "One or more jobs failed:"
+            echo "  test:  ${{ needs.test.result }}"
+            echo "  smoke: ${{ needs.smoke.result }}"
+            exit 1
+          fi
