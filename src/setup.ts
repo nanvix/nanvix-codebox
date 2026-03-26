@@ -201,10 +201,10 @@ export async function setup(options: SetupOptions): Promise<void> {
 
     // 1. Download Nanvix sandbox.
     //    Linux:   nanvix-microvm-standalone-release-128mb-*.tar.bz2
-    //    Windows: nanvix-windows-standalone-release-128mb-*.zip
+    //    Windows: nanvix-windows-microvm-standalone-release-128mb-*.zip
     const nanvixRelease = await fetchLatestRelease("nanvix/nanvix");
     const nanvixAssetPattern = IS_WINDOWS
-        ? /nanvix-windows-standalone-release-128mb-.*\.zip$/
+        ? /nanvix-windows-microvm-standalone-release-128mb-.*\.zip$/
         : /nanvix-microvm-standalone-release-128mb-.*\.tar\.bz2$/;
     const nanvixAsset = findAsset(nanvixRelease, nanvixAssetPattern);
 
