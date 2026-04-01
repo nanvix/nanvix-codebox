@@ -1,9 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, access, stat, writeFile, rm, cp, rename, readdir, unlink } from "node:fs/promises";
+import { mkdir, access, stat, writeFile, readFile, rm, cp, rename, readdir, unlink } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { crc32 } from "node:zlib";
 import { PYTHON_EVAL_WRAPPER, JS_EVAL_WRAPPER } from "./sandbox.js";
 import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 
@@ -79,6 +80,72 @@ async function removeDirectoriesByName(rootDir: string, name: string): Promise<v
             await rm(fullPath, { recursive: true, force: true });
         }
     }
+}
+
+/**
+ * Create a ZIP (stored, no compression) from all files under `dirPath`.
+ * Python's zipimport uses this format (lib/python312.zip) to import modules.
+ * Using stored mode avoids runtime decompression overhead in the memory-
+ * constrained VM while still eliminating per-file ramfs overhead.
+ */
+async function createStoredZip(dirPath: string, outputPath: string): Promise<void> {
+    const entries = await readdir(dirPath, { withFileTypes: true, recursive: true });
+    const files: Array<{ name: string; data: Buffer }> = [];
+    for (const entry of entries) {
+        if (entry.isFile()) {
+            const fullPath = path.join(entry.parentPath ?? entry.path, entry.name);
+            const data = await readFile(fullPath);
+            const relPath = path.relative(dirPath, fullPath).split(path.sep).join("/");
+            files.push({ name: relPath, data });
+        }
+    }
+
+    const parts: Buffer[] = [];
+    const cdEntries: Buffer[] = [];
+    let offset = 0;
+
+    for (const file of files) {
+        const nameBytes = Buffer.from(file.name);
+        const fileCrc = crc32(file.data);
+
+        // Local file header (30 bytes fixed + name + data).
+        const lh = Buffer.alloc(30);
+        lh.writeUInt32LE(0x04034b50, 0);            // local header signature
+        lh.writeUInt16LE(20, 4);                     // version needed (2.0)
+        lh.writeUInt16LE(0, 8);                      // compression: stored
+        lh.writeUInt32LE(fileCrc, 14);               // CRC-32
+        lh.writeUInt32LE(file.data.length, 18);      // compressed size
+        lh.writeUInt32LE(file.data.length, 22);      // uncompressed size
+        lh.writeUInt16LE(nameBytes.length, 26);      // file name length
+        parts.push(lh, nameBytes, file.data);
+
+        // Central directory entry (46 bytes fixed + name).
+        const cd = Buffer.alloc(46);
+        cd.writeUInt32LE(0x02014b50, 0);             // central dir signature
+        cd.writeUInt16LE(20, 4);                     // version made by
+        cd.writeUInt16LE(20, 6);                     // version needed
+        cd.writeUInt16LE(0, 10);                     // compression: stored
+        cd.writeUInt32LE(fileCrc, 16);               // CRC-32
+        cd.writeUInt32LE(file.data.length, 20);      // compressed size
+        cd.writeUInt32LE(file.data.length, 24);      // uncompressed size
+        cd.writeUInt16LE(nameBytes.length, 28);      // file name length
+        cd.writeUInt32LE(offset, 42);                // local header offset
+        cdEntries.push(cd, nameBytes);
+
+        offset += 30 + nameBytes.length + file.data.length;
+    }
+
+    // End of central directory record (22 bytes).
+    const cdOffset = offset;
+    const cdSize = cdEntries.reduce((s, b) => s + b.length, 0);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);               // EOCD signature
+    eocd.writeUInt16LE(files.length, 8);             // entries on this disk
+    eocd.writeUInt16LE(files.length, 10);            // total entries
+    eocd.writeUInt32LE(cdSize, 12);                  // central dir size
+    eocd.writeUInt32LE(cdOffset, 16);                // central dir offset
+
+    await writeFile(outputPath, Buffer.concat([...parts, ...cdEntries, eocd]));
 }
 
 async function fetchLatestRelease(repo: string): Promise<GitHubRelease> {
@@ -342,22 +409,34 @@ export async function setup(options: SetupOptions): Promise<void> {
                 "warnings.py",
                 "linecache.py",
                 "traceback.py",
+                "token.py",
+                "tokenize.py",
                 // Eval wrapper dependencies (base64 → struct → binascii).
                 "base64.py",
                 "struct.py",
                 // Commonly used stdlib modules for user scripts.
                 "string.py",
+                "textwrap.py",
                 "functools.py",
                 "operator.py",
                 "keyword.py",
                 "copy.py",
                 "enum.py",
+                "typing.py",
                 "contextlib.py",
+                "dataclasses.py",
                 "random.py",
                 "heapq.py",
                 "bisect.py",
                 "datetime.py",
-                "textwrap.py",
+                "pprint.py",
+                "reprlib.py",
+                "numbers.py",
+                "platform.py",
+                "inspect.py",
+                "dis.py",
+                "opcode.py",
+                "_opcode.py",
             ]);
             const allowedDirs = new Set([
                 "collections",
@@ -409,17 +488,29 @@ export async function setup(options: SetupOptions): Promise<void> {
         // Phase 6: Remove __pycache__ dirs (Python runs from .py sources).
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Phase 7: Bake the eval wrapper into the sysroot.
+        // Phase 7: Consolidate stdlib into a zip to slash ramfs overhead.
+        // Python automatically adds lib/python312.zip to sys.path at startup
+        // (see CPython Modules/getpath.py). This replaces ~50 loose files with
+        // one zip file, saving ~14MB of ramfs block-alignment overhead.
+        const pyLibDir312 = path.join(pythonSysrootDest, "lib", "python3.12");
+        const stdlibZipPath = path.join(pythonSysrootDest, "lib", "python312.zip");
+        if (await fileExists(pyLibDir312)) {
+            await createStoredZip(pyLibDir312, stdlibZipPath);
+            await rm(pyLibDir312, { recursive: true, force: true });
+            if (verbose) console.error("[setup] Consolidated stdlib into lib/python312.zip");
+        }
+
+        // Phase 8: Bake the eval wrapper into the sysroot.
         await writeFile(
             path.join(pythonSysrootDest, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
 
-        // Phase 8: Validate sysroot size fits in the 128MB VM.
-        // The VM reserves space for initrd + slack (~22MB), leaving ~101MB
-        // for ramfs. Ramfs image = 2× content, content ≈ 1.6× file sizes,
-        // so max file sizes ≈ 101 / 2 / 1.6 ≈ 31MB.
+        // Phase 9: Validate sysroot size fits in the 128MB VM.
+        // With the stdlib zip, the sysroot should be ~38MB (binary + zip + eval).
+        // Ramfs image ≈ 2× content, and with only 3 files the per-file overhead
+        // is negligible, so image ≈ 2× file_sizes ≈ 76MB, leaving ~52MB free.
         const sysrootSize = await directorySize(pythonSysrootDest);
         const sysrootMB = sysrootSize / 1024 / 1024;
         const maxContentBytes = 30 * 1024 * 1024;
