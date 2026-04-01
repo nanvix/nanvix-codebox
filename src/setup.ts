@@ -276,30 +276,48 @@ export async function setup(options: SetupOptions): Promise<void> {
             await rm(path.join(pythonSysrootDest, target), { recursive: true, force: true }).catch(() => { });
         }
 
-        // Phase 2: Remove shared libraries and static archives from lib/.
-        // The standalone binary is statically linked and doesn't need them.
+        // Phase 2: Remove everything from lib/ except the python3.12/ directory.
+        // The standalone binary is statically linked — no shared/static libs needed.
         const libDir = path.join(pythonSysrootDest, "lib");
         if (await fileExists(libDir)) {
             const libEntries = await readdir(libDir, { withFileTypes: true });
             for (const entry of libEntries) {
-                if (entry.isFile() && /\.(a|so|so\..*)$/.test(entry.name)) {
-                    await rm(path.join(libDir, entry.name), { force: true });
+                if (entry.name !== "python3.12") {
+                    await rm(path.join(libDir, entry.name), { recursive: true, force: true });
                 }
             }
         }
 
-        // Phase 3: Strip debug symbols from the Python binary (Linux/macOS).
-        const pythonBin = path.join(pythonSysrootDest, "bin", "python3.12");
-        if (!IS_WINDOWS && await fileExists(pythonBin)) {
-            try {
-                execSync(`strip "${pythonBin}"`, { stdio: "pipe" });
-                if (verbose) console.error("[setup] Stripped debug symbols from Python binary");
-            } catch {
-                // strip may not be available; continue with unstripped binary.
+        // Phase 3: Clean bin/ — keep only the python3.12 interpreter binary.
+        const binDir = path.join(pythonSysrootDest, "bin");
+        if (await fileExists(binDir)) {
+            const binEntries = await readdir(binDir, { withFileTypes: true });
+            for (const entry of binEntries) {
+                if (entry.name !== "python3.12") {
+                    await rm(path.join(binDir, entry.name), { recursive: true, force: true });
+                }
             }
         }
 
-        // Phase 4: Allowlist for lib/python3.12/ — keep only essential modules.
+        // Phase 4: Strip debug symbols from the Python binary.
+        // Try llvm-strip first (handles ELF on any host, including Windows),
+        // then fall back to strip (Linux/macOS).
+        const pythonBin = path.join(pythonSysrootDest, "bin", "python3.12");
+        if (await fileExists(pythonBin)) {
+            let stripped = false;
+            for (const cmd of ["llvm-strip", "strip"]) {
+                if (stripped) break;
+                try {
+                    execSync(`${cmd} "${pythonBin}"`, { stdio: "pipe" });
+                    stripped = true;
+                    if (verbose) console.error(`[setup] Stripped Python binary with ${cmd}`);
+                } catch {
+                    // Tool not available or failed; try next.
+                }
+            }
+        }
+
+        // Phase 5: Allowlist for lib/python3.12/ — keep only essential modules.
         // Uses an allowlist instead of a blacklist so the sysroot stays small
         // regardless of what the upstream CPython release ships.
         const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
@@ -324,39 +342,22 @@ export async function setup(options: SetupOptions): Promise<void> {
                 "warnings.py",
                 "linecache.py",
                 "traceback.py",
-                "token.py",
-                "tokenize.py",
                 // Eval wrapper dependencies (base64 → struct → binascii).
                 "base64.py",
                 "struct.py",
                 // Commonly used stdlib modules for user scripts.
                 "string.py",
-                "textwrap.py",
                 "functools.py",
                 "operator.py",
                 "keyword.py",
-                "reprlib.py",
-                "pprint.py",
                 "copy.py",
                 "enum.py",
-                "typing.py",
                 "contextlib.py",
-                "dataclasses.py",
-                "numbers.py",
-                "decimal.py",
-                "fractions.py",
                 "random.py",
-                "bisect.py",
                 "heapq.py",
-                "hashlib.py",
+                "bisect.py",
                 "datetime.py",
-                "calendar.py",
-                "inspect.py",
-                "dis.py",
-                "opcode.py",
-                "_opcode.py",
-                "difflib.py",
-                "_markupbase.py",
+                "textwrap.py",
             ]);
             const allowedDirs = new Set([
                 "collections",
@@ -405,28 +406,30 @@ export async function setup(options: SetupOptions): Promise<void> {
             await rm(path.join(pyLibDir, "importlib", "metadata"), { recursive: true, force: true }).catch(() => { });
         }
 
-        // Phase 5: Remove __pycache__ dirs (Python runs from .py sources).
+        // Phase 6: Remove __pycache__ dirs (Python runs from .py sources).
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Phase 6: Bake the eval wrapper into the sysroot.
+        // Phase 7: Bake the eval wrapper into the sysroot.
         await writeFile(
             path.join(pythonSysrootDest, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
 
-        // Phase 7: Validate sysroot size fits in the 128MB VM.
-        // Empirically, image ≈ 3.5× file sizes, so 37MB → ~130MB image.
+        // Phase 8: Validate sysroot size fits in the 128MB VM.
+        // The VM reserves space for initrd + slack (~22MB), leaving ~101MB
+        // for ramfs. Ramfs image = 2× content, content ≈ 1.6× file sizes,
+        // so max file sizes ≈ 101 / 2 / 1.6 ≈ 31MB.
         const sysrootSize = await directorySize(pythonSysrootDest);
         const sysrootMB = sysrootSize / 1024 / 1024;
-        const maxContentBytes = 37 * 1024 * 1024;
+        const maxContentBytes = 30 * 1024 * 1024;
         if (verbose || sysrootSize > maxContentBytes) {
             console.error(`[setup] Python sysroot: ${sysrootMB.toFixed(1)}M (trimmed, with eval wrapper)`);
         }
         if (sysrootSize > maxContentBytes) {
             console.error(
                 `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) exceeds ` +
-                `the estimated safe limit (~37M). The ramfs image may not fit ` +
+                `the estimated safe limit (~30M). The ramfs image may not fit ` +
                 `in the 128MB VM. Consider removing additional modules.`
             );
         }
