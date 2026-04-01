@@ -267,21 +267,93 @@ export async function setup(options: SetupOptions): Promise<void> {
         await rename(cpythonSysroot, pythonSysrootDest);
 
         // Trim build artifacts to fit in 128MB VM (runtime doesn't need these).
+        // The ramfs image is ~2× content size, so content must be under 64MB.
         console.error("[setup] Trimming Python sysroot for 128MB VM...");
         const trimTargets = [
+            // Build artifacts and development files.
             "lib/libpython3.12.a",
             "lib/python3.12/config-3.12",
             "include",
             "lib/pkgconfig",
             "share",
+            // Extension modules (.so) — the microvm standalone build compiles
+            // essential extensions (binascii, struct, _sre, etc.) into the
+            // interpreter binary, so lib-dynload is not needed.
+            "lib/python3.12/lib-dynload",
+            // GUI and interactive toolkits (not useful in a headless sandbox).
             "lib/python3.12/idlelib",
-            "lib/python3.12/ensurepip",
             "lib/python3.12/tkinter",
+            "lib/python3.12/turtledemo",
+            "lib/python3.12/curses",
+            // Package management and environment tools.
+            "lib/python3.12/ensurepip",
+            "lib/python3.12/venv",
+            "lib/python3.12/distutils",
+            // Code migration and documentation tools.
             "lib/python3.12/lib2to3",
             "lib/python3.12/pydoc_data",
-            "lib/python3.12/turtledemo",
+            // Testing frameworks.
             "lib/python3.12/unittest",
             "lib/python3.12/test",
+            "lib/python3.12/doctest.py",
+            // Network-dependent modules (sandbox has no network access).
+            "lib/python3.12/http",
+            "lib/python3.12/email",
+            "lib/python3.12/html",
+            "lib/python3.12/urllib",
+            "lib/python3.12/xmlrpc",
+            "lib/python3.12/imaplib.py",
+            "lib/python3.12/smtplib.py",
+            "lib/python3.12/smtpd.py",
+            "lib/python3.12/nntplib.py",
+            "lib/python3.12/poplib.py",
+            "lib/python3.12/ftplib.py",
+            "lib/python3.12/telnetlib.py",
+            "lib/python3.12/socketserver.py",
+            "lib/python3.12/socket.py",
+            "lib/python3.12/ssl.py",
+            "lib/python3.12/webbrowser.py",
+            "lib/python3.12/wsgiref",
+            "lib/python3.12/cgi.py",
+            "lib/python3.12/cgitb.py",
+            // Modules that require OS features unavailable in the sandbox.
+            "lib/python3.12/multiprocessing",
+            "lib/python3.12/concurrent",
+            "lib/python3.12/ctypes",
+            "lib/python3.12/dbm",
+            "lib/python3.12/sqlite3",
+            "lib/python3.12/asyncio",
+            "lib/python3.12/xml",
+            "lib/python3.12/subprocess.py",
+            "lib/python3.12/threading.py",
+            "lib/python3.12/_threading_local.py",
+            // Debugging and profiling tools.
+            "lib/python3.12/pdb.py",
+            "lib/python3.12/profile.py",
+            "lib/python3.12/pstats.py",
+            "lib/python3.12/cProfile.py",
+            "lib/python3.12/trace.py",
+            "lib/python3.12/bdb.py",
+            // Compilation and bytecode tools.
+            "lib/python3.12/compileall.py",
+            "lib/python3.12/py_compile.py",
+            "lib/python3.12/_pyio.py",
+            // Serialization modules not needed for typical scripts.
+            "lib/python3.12/pickle.py",
+            "lib/python3.12/_compat_pickle.py",
+            "lib/python3.12/pickletools.py",
+            "lib/python3.12/shelve.py",
+            // Misc modules not needed for typical sandbox scripts.
+            "lib/python3.12/tomllib",
+            "lib/python3.12/zipapp.py",
+            "lib/python3.12/zipimport.py",
+            "lib/python3.12/turtle.py",
+            "lib/python3.12/typing_extensions.py",
+            "lib/python3.12/mailbox.py",
+            "lib/python3.12/mailcap.py",
+            "lib/python3.12/mimetypes.py",
+            "lib/python3.12/logging",
+            "lib/python3.12/importlib/metadata",
         ];
         for (const target of trimTargets) {
             await rm(path.join(pythonSysrootDest, target), { recursive: true, force: true }).catch(() => { });
@@ -299,15 +371,39 @@ export async function setup(options: SetupOptions): Promise<void> {
         // Remove __pycache__ dirs (saves space; Python can run from .py sources).
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
+        // Remove shared libraries (libpython*.so*) — the standalone binary
+        // is statically linked and does not need them at runtime.
+        const libDir = path.join(pythonSysrootDest, "lib");
+        if (await fileExists(libDir)) {
+            const libEntries = await readdir(libDir, { withFileTypes: true });
+            for (const entry of libEntries) {
+                if (entry.isFile() && /\.(so|so\..*)$/.test(entry.name)) {
+                    await rm(path.join(libDir, entry.name), { force: true });
+                }
+            }
+        }
+
         // Bake the eval wrapper into the sysroot so it's included in every ramfs.
         await writeFile(
             path.join(pythonSysrootDest, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
-        if (verbose) {
-            const size = await directorySize(pythonSysrootDest);
-            console.error(`[setup] Python sysroot: ${(size / 1024 / 1024).toFixed(1)}M (trimmed, with eval wrapper)`);
+
+        // Validate sysroot size fits in the 128MB VM.
+        // The ramfs image is ~2× the content size, so content must be under 64MB.
+        const sysrootSize = await directorySize(pythonSysrootDest);
+        const sysrootMB = sysrootSize / 1024 / 1024;
+        const maxContentBytes = 64 * 1024 * 1024;
+        if (verbose || sysrootSize > maxContentBytes) {
+            console.error(`[setup] Python sysroot: ${sysrootMB.toFixed(1)}M (trimmed, with eval wrapper)`);
+        }
+        if (sysrootSize > maxContentBytes) {
+            console.error(
+                `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) may exceed ` +
+                `the 128MB VM memory limit after ramfs packaging. ` +
+                `Consider removing additional modules.`
+            );
         }
     } else {
         console.error("[setup] WARNING: CPython sysroot not found in release");
