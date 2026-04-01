@@ -266,143 +266,168 @@ export async function setup(options: SetupOptions): Promise<void> {
         await rm(pythonSysrootDest, { recursive: true, force: true });
         await rename(cpythonSysroot, pythonSysrootDest);
 
-        // Trim build artifacts to fit in 128MB VM (runtime doesn't need these).
-        // The ramfs image is ~2× content size, so content must be under 64MB.
+        // Aggressively trim the Python sysroot to fit in the 128MB VM.
+        // Empirically, the ramfs image is ≈3.5× file sizes (block-alignment
+        // overhead + 2× image mapping), so file content must stay under ~36MB.
         console.error("[setup] Trimming Python sysroot for 128MB VM...");
-        const trimTargets = [
-            // Build artifacts and development files.
-            "lib/libpython3.12.a",
-            "lib/python3.12/config-3.12",
-            "include",
-            "lib/pkgconfig",
-            "share",
-            // Extension modules (.so) — the microvm standalone build compiles
-            // essential extensions (binascii, struct, _sre, etc.) into the
-            // interpreter binary, so lib-dynload is not needed.
-            "lib/python3.12/lib-dynload",
-            // GUI and interactive toolkits (not useful in a headless sandbox).
-            "lib/python3.12/idlelib",
-            "lib/python3.12/tkinter",
-            "lib/python3.12/turtledemo",
-            "lib/python3.12/curses",
-            // Package management and environment tools.
-            "lib/python3.12/ensurepip",
-            "lib/python3.12/venv",
-            "lib/python3.12/distutils",
-            // Code migration and documentation tools.
-            "lib/python3.12/lib2to3",
-            "lib/python3.12/pydoc_data",
-            // Testing frameworks.
-            "lib/python3.12/unittest",
-            "lib/python3.12/test",
-            "lib/python3.12/doctest.py",
-            // Network-dependent modules (sandbox has no network access).
-            "lib/python3.12/http",
-            "lib/python3.12/email",
-            "lib/python3.12/html",
-            "lib/python3.12/urllib",
-            "lib/python3.12/xmlrpc",
-            "lib/python3.12/imaplib.py",
-            "lib/python3.12/smtplib.py",
-            "lib/python3.12/smtpd.py",
-            "lib/python3.12/nntplib.py",
-            "lib/python3.12/poplib.py",
-            "lib/python3.12/ftplib.py",
-            "lib/python3.12/telnetlib.py",
-            "lib/python3.12/socketserver.py",
-            "lib/python3.12/socket.py",
-            "lib/python3.12/ssl.py",
-            "lib/python3.12/webbrowser.py",
-            "lib/python3.12/wsgiref",
-            "lib/python3.12/cgi.py",
-            "lib/python3.12/cgitb.py",
-            // Modules that require OS features unavailable in the sandbox.
-            "lib/python3.12/multiprocessing",
-            "lib/python3.12/concurrent",
-            "lib/python3.12/ctypes",
-            "lib/python3.12/dbm",
-            "lib/python3.12/sqlite3",
-            "lib/python3.12/asyncio",
-            "lib/python3.12/xml",
-            "lib/python3.12/subprocess.py",
-            "lib/python3.12/threading.py",
-            "lib/python3.12/_threading_local.py",
-            // Debugging and profiling tools.
-            "lib/python3.12/pdb.py",
-            "lib/python3.12/profile.py",
-            "lib/python3.12/pstats.py",
-            "lib/python3.12/cProfile.py",
-            "lib/python3.12/trace.py",
-            "lib/python3.12/bdb.py",
-            // Compilation and bytecode tools.
-            "lib/python3.12/compileall.py",
-            "lib/python3.12/py_compile.py",
-            "lib/python3.12/_pyio.py",
-            // Serialization modules not needed for typical scripts.
-            "lib/python3.12/pickle.py",
-            "lib/python3.12/_compat_pickle.py",
-            "lib/python3.12/pickletools.py",
-            "lib/python3.12/shelve.py",
-            // Misc modules not needed for typical sandbox scripts.
-            "lib/python3.12/tomllib",
-            "lib/python3.12/zipapp.py",
-            "lib/python3.12/zipimport.py",
-            "lib/python3.12/turtle.py",
-            "lib/python3.12/typing_extensions.py",
-            "lib/python3.12/mailbox.py",
-            "lib/python3.12/mailcap.py",
-            "lib/python3.12/mimetypes.py",
-            "lib/python3.12/logging",
-            "lib/python3.12/importlib/metadata",
-        ];
-        for (const target of trimTargets) {
+
+        // Phase 1: Remove top-level build artifacts and development files.
+        for (const target of ["include", "share", "lib/pkgconfig"]) {
             await rm(path.join(pythonSysrootDest, target), { recursive: true, force: true }).catch(() => { });
         }
-        // Also remove any config-3.12-* variant (e.g. config-3.12-x86_64-linux-gnu).
-        const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
-        if (await fileExists(pyLibDir)) {
-            const entries = await readdir(pyLibDir, { withFileTypes: true });
-            for (const entry of entries) {
-                if (entry.isDirectory() && entry.name.startsWith("config-3.12")) {
-                    await rm(path.join(pyLibDir, entry.name), { recursive: true, force: true });
-                }
-            }
-        }
-        // Remove __pycache__ dirs (saves space; Python can run from .py sources).
-        await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Remove shared libraries (libpython*.so*) — the standalone binary
-        // is statically linked and does not need them at runtime.
+        // Phase 2: Remove shared libraries and static archives from lib/.
+        // The standalone binary is statically linked and doesn't need them.
         const libDir = path.join(pythonSysrootDest, "lib");
         if (await fileExists(libDir)) {
             const libEntries = await readdir(libDir, { withFileTypes: true });
             for (const entry of libEntries) {
-                if (entry.isFile() && /\.(so|so\..*)$/.test(entry.name)) {
+                if (entry.isFile() && /\.(a|so|so\..*)$/.test(entry.name)) {
                     await rm(path.join(libDir, entry.name), { force: true });
                 }
             }
         }
 
-        // Bake the eval wrapper into the sysroot so it's included in every ramfs.
+        // Phase 3: Strip debug symbols from the Python binary (Linux/macOS).
+        const pythonBin = path.join(pythonSysrootDest, "bin", "python3.12");
+        if (!IS_WINDOWS && await fileExists(pythonBin)) {
+            try {
+                execSync(`strip "${pythonBin}"`, { stdio: "pipe" });
+                if (verbose) console.error("[setup] Stripped debug symbols from Python binary");
+            } catch {
+                // strip may not be available; continue with unstripped binary.
+            }
+        }
+
+        // Phase 4: Allowlist for lib/python3.12/ — keep only essential modules.
+        // Uses an allowlist instead of a blacklist so the sysroot stays small
+        // regardless of what the upstream CPython release ships.
+        const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
+        if (await fileExists(pyLibDir)) {
+            const allowedFiles = new Set([
+                // Python boot and import chain.
+                "__future__.py",
+                "_collections_abc.py",
+                "_py_abc.py",
+                "_sitebuiltins.py",
+                "_weakrefset.py",
+                "abc.py",
+                "codecs.py",
+                "copyreg.py",
+                "genericpath.py",
+                "io.py",
+                "os.py",
+                "posixpath.py",
+                "site.py",
+                "stat.py",
+                "types.py",
+                "warnings.py",
+                "linecache.py",
+                "traceback.py",
+                "token.py",
+                "tokenize.py",
+                // Eval wrapper dependencies (base64 → struct → binascii).
+                "base64.py",
+                "struct.py",
+                // Commonly used stdlib modules for user scripts.
+                "string.py",
+                "textwrap.py",
+                "functools.py",
+                "operator.py",
+                "keyword.py",
+                "reprlib.py",
+                "pprint.py",
+                "copy.py",
+                "enum.py",
+                "typing.py",
+                "contextlib.py",
+                "dataclasses.py",
+                "numbers.py",
+                "decimal.py",
+                "fractions.py",
+                "random.py",
+                "bisect.py",
+                "heapq.py",
+                "hashlib.py",
+                "datetime.py",
+                "calendar.py",
+                "inspect.py",
+                "dis.py",
+                "opcode.py",
+                "_opcode.py",
+                "difflib.py",
+                "_markupbase.py",
+            ]);
+            const allowedDirs = new Set([
+                "collections",
+                "encodings",
+                "importlib",
+                "json",
+                "re",
+            ]);
+
+            const pyLibEntries = await readdir(pyLibDir, { withFileTypes: true });
+            for (const entry of pyLibEntries) {
+                if (entry.isDirectory()) {
+                    if (!allowedDirs.has(entry.name)) {
+                        await rm(path.join(pyLibDir, entry.name), { recursive: true, force: true });
+                    }
+                } else if (entry.isFile()) {
+                    if (!allowedFiles.has(entry.name)) {
+                        await rm(path.join(pyLibDir, entry.name), { force: true });
+                    }
+                }
+            }
+
+            // Prune encodings/ to essential codecs only (saves ~1.5MB of small files
+            // that also cause disproportionate ramfs block-alignment waste).
+            const encodingsDir = path.join(pyLibDir, "encodings");
+            if (await fileExists(encodingsDir)) {
+                const essentialEncodings = new Set([
+                    "__init__.py",
+                    "aliases.py",
+                    "ascii.py",
+                    "latin_1.py",
+                    "raw_unicode_escape.py",
+                    "unicode_escape.py",
+                    "utf_8.py",
+                    "utf_8_sig.py",
+                ]);
+                const encEntries = await readdir(encodingsDir, { withFileTypes: true });
+                for (const entry of encEntries) {
+                    if (!essentialEncodings.has(entry.name)) {
+                        await rm(path.join(encodingsDir, entry.name), { recursive: true, force: true });
+                    }
+                }
+            }
+
+            // Remove importlib/metadata/ (package metadata not needed at runtime).
+            await rm(path.join(pyLibDir, "importlib", "metadata"), { recursive: true, force: true }).catch(() => { });
+        }
+
+        // Phase 5: Remove __pycache__ dirs (Python runs from .py sources).
+        await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
+
+        // Phase 6: Bake the eval wrapper into the sysroot.
         await writeFile(
             path.join(pythonSysrootDest, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
 
-        // Validate sysroot size fits in the 128MB VM.
-        // The ramfs image is ~2× the content size, so content must be under 64MB.
+        // Phase 7: Validate sysroot size fits in the 128MB VM.
+        // Empirically, image ≈ 3.5× file sizes, so 37MB → ~130MB image.
         const sysrootSize = await directorySize(pythonSysrootDest);
         const sysrootMB = sysrootSize / 1024 / 1024;
-        const maxContentBytes = 64 * 1024 * 1024;
+        const maxContentBytes = 37 * 1024 * 1024;
         if (verbose || sysrootSize > maxContentBytes) {
             console.error(`[setup] Python sysroot: ${sysrootMB.toFixed(1)}M (trimmed, with eval wrapper)`);
         }
         if (sysrootSize > maxContentBytes) {
             console.error(
-                `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) may exceed ` +
-                `the 128MB VM memory limit after ramfs packaging. ` +
-                `Consider removing additional modules.`
+                `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) exceeds ` +
+                `the estimated safe limit (~37M). The ramfs image may not fit ` +
+                `in the 128MB VM. Consider removing additional modules.`
             );
         }
     } else {
