@@ -1,9 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, access, stat, writeFile, rm, cp, rename, readdir, unlink } from "node:fs/promises";
+import { mkdir, access, stat, writeFile, readFile, rm, cp, rename, readdir, unlink } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { crc32 } from "node:zlib";
 import { PYTHON_EVAL_WRAPPER, JS_EVAL_WRAPPER } from "./sandbox.js";
 import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 
@@ -79,6 +80,72 @@ async function removeDirectoriesByName(rootDir: string, name: string): Promise<v
             await rm(fullPath, { recursive: true, force: true });
         }
     }
+}
+
+/**
+ * Create a ZIP (stored, no compression) from all files under `dirPath`.
+ * Python's zipimport uses this format (lib/python312.zip) to import modules.
+ * Using stored mode avoids runtime decompression overhead in the memory-
+ * constrained VM while still eliminating per-file ramfs overhead.
+ */
+async function createStoredZip(dirPath: string, outputPath: string): Promise<void> {
+    const entries = await readdir(dirPath, { withFileTypes: true, recursive: true });
+    const files: Array<{ name: string; data: Buffer }> = [];
+    for (const entry of entries) {
+        if (entry.isFile()) {
+            const fullPath = path.join(entry.parentPath ?? entry.path, entry.name);
+            const data = await readFile(fullPath);
+            const relPath = path.relative(dirPath, fullPath).split(path.sep).join("/");
+            files.push({ name: relPath, data });
+        }
+    }
+
+    const parts: Buffer[] = [];
+    const cdEntries: Buffer[] = [];
+    let offset = 0;
+
+    for (const file of files) {
+        const nameBytes = Buffer.from(file.name);
+        const fileCrc = crc32(file.data);
+
+        // Local file header (30 bytes fixed + name + data).
+        const lh = Buffer.alloc(30);
+        lh.writeUInt32LE(0x04034b50, 0);            // local header signature
+        lh.writeUInt16LE(20, 4);                     // version needed (2.0)
+        lh.writeUInt16LE(0, 8);                      // compression: stored
+        lh.writeUInt32LE(fileCrc, 14);               // CRC-32
+        lh.writeUInt32LE(file.data.length, 18);      // compressed size
+        lh.writeUInt32LE(file.data.length, 22);      // uncompressed size
+        lh.writeUInt16LE(nameBytes.length, 26);      // file name length
+        parts.push(lh, nameBytes, file.data);
+
+        // Central directory entry (46 bytes fixed + name).
+        const cd = Buffer.alloc(46);
+        cd.writeUInt32LE(0x02014b50, 0);             // central dir signature
+        cd.writeUInt16LE(20, 4);                     // version made by
+        cd.writeUInt16LE(20, 6);                     // version needed
+        cd.writeUInt16LE(0, 10);                     // compression: stored
+        cd.writeUInt32LE(fileCrc, 16);               // CRC-32
+        cd.writeUInt32LE(file.data.length, 20);      // compressed size
+        cd.writeUInt32LE(file.data.length, 24);      // uncompressed size
+        cd.writeUInt16LE(nameBytes.length, 28);      // file name length
+        cd.writeUInt32LE(offset, 42);                // local header offset
+        cdEntries.push(cd, nameBytes);
+
+        offset += 30 + nameBytes.length + file.data.length;
+    }
+
+    // End of central directory record (22 bytes).
+    const cdOffset = offset;
+    const cdSize = cdEntries.reduce((s, b) => s + b.length, 0);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);               // EOCD signature
+    eocd.writeUInt16LE(files.length, 8);             // entries on this disk
+    eocd.writeUInt16LE(files.length, 10);            // total entries
+    eocd.writeUInt32LE(cdSize, 12);                  // central dir size
+    eocd.writeUInt32LE(cdOffset, 16);                // central dir offset
+
+    await writeFile(outputPath, Buffer.concat([...parts, ...cdEntries, eocd]));
 }
 
 async function fetchLatestRelease(repo: string): Promise<GitHubRelease> {
@@ -266,48 +333,196 @@ export async function setup(options: SetupOptions): Promise<void> {
         await rm(pythonSysrootDest, { recursive: true, force: true });
         await rename(cpythonSysroot, pythonSysrootDest);
 
-        // Trim build artifacts to fit in 128MB VM (runtime doesn't need these).
+        // Aggressively trim the Python sysroot to fit in the 128MB VM.
+        // Empirically, the ramfs image is ≈3.5× file sizes (block-alignment
+        // overhead + 2× image mapping), so file content must stay under ~36MB.
         console.error("[setup] Trimming Python sysroot for 128MB VM...");
-        const trimTargets = [
-            "lib/libpython3.12.a",
-            "lib/python3.12/config-3.12",
-            "include",
-            "lib/pkgconfig",
-            "share",
-            "lib/python3.12/idlelib",
-            "lib/python3.12/ensurepip",
-            "lib/python3.12/tkinter",
-            "lib/python3.12/lib2to3",
-            "lib/python3.12/pydoc_data",
-            "lib/python3.12/turtledemo",
-            "lib/python3.12/unittest",
-            "lib/python3.12/test",
-        ];
-        for (const target of trimTargets) {
+
+        // Phase 1: Remove top-level build artifacts and development files.
+        for (const target of ["include", "share", "lib/pkgconfig"]) {
             await rm(path.join(pythonSysrootDest, target), { recursive: true, force: true }).catch(() => { });
         }
-        // Also remove any config-3.12-* variant (e.g. config-3.12-x86_64-linux-gnu).
-        const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
-        if (await fileExists(pyLibDir)) {
-            const entries = await readdir(pyLibDir, { withFileTypes: true });
-            for (const entry of entries) {
-                if (entry.isDirectory() && entry.name.startsWith("config-3.12")) {
-                    await rm(path.join(pyLibDir, entry.name), { recursive: true, force: true });
+
+        // Phase 2: Remove everything from lib/ except the python3.12/ directory.
+        // The standalone binary is statically linked — no shared/static libs needed.
+        const libDir = path.join(pythonSysrootDest, "lib");
+        if (await fileExists(libDir)) {
+            const libEntries = await readdir(libDir, { withFileTypes: true });
+            for (const entry of libEntries) {
+                if (entry.name !== "python3.12") {
+                    await rm(path.join(libDir, entry.name), { recursive: true, force: true });
                 }
             }
         }
-        // Remove __pycache__ dirs (saves space; Python can run from .py sources).
+
+        // Phase 3: Clean bin/ — keep only the python3.12 interpreter binary.
+        const binDir = path.join(pythonSysrootDest, "bin");
+        if (await fileExists(binDir)) {
+            const binEntries = await readdir(binDir, { withFileTypes: true });
+            for (const entry of binEntries) {
+                if (entry.name !== "python3.12") {
+                    await rm(path.join(binDir, entry.name), { recursive: true, force: true });
+                }
+            }
+        }
+
+        // Phase 4: Strip debug symbols from the Python binary.
+        // Try llvm-strip first (handles ELF on any host, including Windows),
+        // then fall back to strip (Linux/macOS).
+        const pythonBin = path.join(pythonSysrootDest, "bin", "python3.12");
+        if (await fileExists(pythonBin)) {
+            let stripped = false;
+            for (const cmd of ["llvm-strip", "strip"]) {
+                if (stripped) break;
+                try {
+                    execSync(`${cmd} "${pythonBin}"`, { stdio: "pipe" });
+                    stripped = true;
+                    if (verbose) console.error(`[setup] Stripped Python binary with ${cmd}`);
+                } catch {
+                    // Tool not available or failed; try next.
+                }
+            }
+        }
+
+        // Phase 5: Allowlist for lib/python3.12/ — keep only essential modules.
+        // Uses an allowlist instead of a blacklist so the sysroot stays small
+        // regardless of what the upstream CPython release ships.
+        const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
+        if (await fileExists(pyLibDir)) {
+            const allowedFiles = new Set([
+                // Python boot and import chain.
+                "__future__.py",
+                "_collections_abc.py",
+                "_py_abc.py",
+                "_sitebuiltins.py",
+                "_weakrefset.py",
+                "abc.py",
+                "codecs.py",
+                "copyreg.py",
+                "genericpath.py",
+                "io.py",
+                "os.py",
+                "posixpath.py",
+                "site.py",
+                "stat.py",
+                "types.py",
+                "warnings.py",
+                "linecache.py",
+                "traceback.py",
+                "token.py",
+                "tokenize.py",
+                // Eval wrapper dependencies (base64 → struct → binascii).
+                "base64.py",
+                "struct.py",
+                // Commonly used stdlib modules for user scripts.
+                "string.py",
+                "textwrap.py",
+                "functools.py",
+                "operator.py",
+                "keyword.py",
+                "copy.py",
+                "enum.py",
+                "typing.py",
+                "contextlib.py",
+                "dataclasses.py",
+                "random.py",
+                "heapq.py",
+                "bisect.py",
+                "datetime.py",
+                "pprint.py",
+                "reprlib.py",
+                "numbers.py",
+                "platform.py",
+                "inspect.py",
+                "dis.py",
+                "opcode.py",
+                "_opcode.py",
+            ]);
+            const allowedDirs = new Set([
+                "collections",
+                "encodings",
+                "importlib",
+                "json",
+                "re",
+            ]);
+
+            const pyLibEntries = await readdir(pyLibDir, { withFileTypes: true });
+            for (const entry of pyLibEntries) {
+                if (entry.isDirectory()) {
+                    if (!allowedDirs.has(entry.name)) {
+                        await rm(path.join(pyLibDir, entry.name), { recursive: true, force: true });
+                    }
+                } else if (entry.isFile()) {
+                    if (!allowedFiles.has(entry.name)) {
+                        await rm(path.join(pyLibDir, entry.name), { force: true });
+                    }
+                }
+            }
+
+            // Prune encodings/ to essential codecs only (saves ~1.5MB of small files
+            // that also cause disproportionate ramfs block-alignment waste).
+            const encodingsDir = path.join(pyLibDir, "encodings");
+            if (await fileExists(encodingsDir)) {
+                const essentialEncodings = new Set([
+                    "__init__.py",
+                    "aliases.py",
+                    "ascii.py",
+                    "latin_1.py",
+                    "raw_unicode_escape.py",
+                    "unicode_escape.py",
+                    "utf_8.py",
+                    "utf_8_sig.py",
+                ]);
+                const encEntries = await readdir(encodingsDir, { withFileTypes: true });
+                for (const entry of encEntries) {
+                    if (!essentialEncodings.has(entry.name)) {
+                        await rm(path.join(encodingsDir, entry.name), { recursive: true, force: true });
+                    }
+                }
+            }
+
+            // Remove importlib/metadata/ (package metadata not needed at runtime).
+            await rm(path.join(pyLibDir, "importlib", "metadata"), { recursive: true, force: true }).catch(() => { });
+        }
+
+        // Phase 6: Remove __pycache__ dirs (Python runs from .py sources).
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Bake the eval wrapper into the sysroot so it's included in every ramfs.
+        // Phase 7: Consolidate stdlib into a zip to slash ramfs overhead.
+        // Python automatically adds lib/python312.zip to sys.path at startup
+        // (see CPython Modules/getpath.py). This replaces ~50 loose files with
+        // one zip file, saving ~14MB of ramfs block-alignment overhead.
+        const pyLibDir312 = path.join(pythonSysrootDest, "lib", "python3.12");
+        const stdlibZipPath = path.join(pythonSysrootDest, "lib", "python312.zip");
+        if (await fileExists(pyLibDir312)) {
+            await createStoredZip(pyLibDir312, stdlibZipPath);
+            await rm(pyLibDir312, { recursive: true, force: true });
+            if (verbose) console.error("[setup] Consolidated stdlib into lib/python312.zip");
+        }
+
+        // Phase 8: Bake the eval wrapper into the sysroot.
         await writeFile(
             path.join(pythonSysrootDest, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
-        if (verbose) {
-            const size = await directorySize(pythonSysrootDest);
-            console.error(`[setup] Python sysroot: ${(size / 1024 / 1024).toFixed(1)}M (trimmed, with eval wrapper)`);
+
+        // Phase 9: Validate sysroot size fits in the 128MB VM.
+        // With the stdlib zip, the sysroot should be ~38MB (binary + zip + eval).
+        // Ramfs image ≈ 2× content, and with only 3 files the per-file overhead
+        // is negligible, so image ≈ 2× file_sizes ≈ 76MB, leaving ~52MB free.
+        const sysrootSize = await directorySize(pythonSysrootDest);
+        const sysrootMB = sysrootSize / 1024 / 1024;
+        const maxContentBytes = 30 * 1024 * 1024;
+        if (verbose || sysrootSize > maxContentBytes) {
+            console.error(`[setup] Python sysroot: ${sysrootMB.toFixed(1)}M (trimmed, with eval wrapper)`);
+        }
+        if (sysrootSize > maxContentBytes) {
+            console.error(
+                `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) exceeds ` +
+                `the estimated safe limit (~30M). The ramfs image may not fit ` +
+                `in the 128MB VM. Consider removing additional modules.`
+            );
         }
     } else {
         console.error("[setup] WARNING: CPython sysroot not found in release");
