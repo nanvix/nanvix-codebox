@@ -78,7 +78,7 @@ function getRuntimeConfig(runtime: Runtime, nanvixHome: string): RuntimeConfig {
     switch (runtime) {
         case "python":
             return {
-                sysrootDir: path.join(nanvixHome, "runtimes", "python-sysroot"),
+                sysrootDir: path.join(nanvixHome, "runtimes", "python-sysroot", "ramfs"),
                 // Guest binary — always ELF regardless of host OS.
                 hostBinPath: path.join(nanvixHome, "runtimes", "python-sysroot", "bin", "python3.12"),
                 // -B = don't write .pyc files
