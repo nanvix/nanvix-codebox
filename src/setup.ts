@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { crc32 } from "node:zlib";
+import { crc32, deflateRawSync } from "node:zlib";
 import { PYTHON_EVAL_WRAPPER, JS_EVAL_WRAPPER } from "./sandbox.js";
 import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 
@@ -83,20 +83,22 @@ async function removeDirectoriesByName(rootDir: string, name: string): Promise<v
 }
 
 /**
- * Create a ZIP (stored, no compression) from all files under `dirPath`.
+ * Create a DEFLATE-compressed ZIP from all files under `dirPath`.
  * Python's zipimport uses this format (lib/python312.zip) to import modules.
- * Using stored mode avoids runtime decompression overhead in the memory-
- * constrained VM while still eliminating per-file ramfs overhead.
+ * Deflate compression significantly reduces the zip size (Python .py source
+ * files compress ~60-70%), keeping the ramfs image within the 128MB VM limit.
+ * Python's zipimport natively supports deflated entries via its built-in zlib.
  */
-async function createStoredZip(dirPath: string, outputPath: string): Promise<void> {
+async function createDeflatedZip(dirPath: string, outputPath: string): Promise<void> {
     const entries = await readdir(dirPath, { withFileTypes: true, recursive: true });
-    const files: Array<{ name: string; data: Buffer }> = [];
+    const files: Array<{ name: string; data: Buffer; compressed: Buffer }> = [];
     for (const entry of entries) {
         if (entry.isFile()) {
             const fullPath = path.join(entry.parentPath ?? entry.path, entry.name);
             const data = await readFile(fullPath);
             const relPath = path.relative(dirPath, fullPath).split(path.sep).join("/");
-            files.push({ name: relPath, data });
+            const compressed = deflateRawSync(data);
+            files.push({ name: relPath, data, compressed });
         }
     }
 
@@ -108,31 +110,31 @@ async function createStoredZip(dirPath: string, outputPath: string): Promise<voi
         const nameBytes = Buffer.from(file.name);
         const fileCrc = crc32(file.data);
 
-        // Local file header (30 bytes fixed + name + data).
+        // Local file header (30 bytes fixed + name + compressed data).
         const lh = Buffer.alloc(30);
         lh.writeUInt32LE(0x04034b50, 0);            // local header signature
         lh.writeUInt16LE(20, 4);                     // version needed (2.0)
-        lh.writeUInt16LE(0, 8);                      // compression: stored
+        lh.writeUInt16LE(8, 8);                      // compression: deflated
         lh.writeUInt32LE(fileCrc, 14);               // CRC-32
-        lh.writeUInt32LE(file.data.length, 18);      // compressed size
+        lh.writeUInt32LE(file.compressed.length, 18); // compressed size
         lh.writeUInt32LE(file.data.length, 22);      // uncompressed size
         lh.writeUInt16LE(nameBytes.length, 26);      // file name length
-        parts.push(lh, nameBytes, file.data);
+        parts.push(lh, nameBytes, file.compressed);
 
         // Central directory entry (46 bytes fixed + name).
         const cd = Buffer.alloc(46);
         cd.writeUInt32LE(0x02014b50, 0);             // central dir signature
         cd.writeUInt16LE(20, 4);                     // version made by
         cd.writeUInt16LE(20, 6);                     // version needed
-        cd.writeUInt16LE(0, 10);                     // compression: stored
+        cd.writeUInt16LE(8, 10);                     // compression: deflated
         cd.writeUInt32LE(fileCrc, 16);               // CRC-32
-        cd.writeUInt32LE(file.data.length, 20);      // compressed size
+        cd.writeUInt32LE(file.compressed.length, 20); // compressed size
         cd.writeUInt32LE(file.data.length, 24);      // uncompressed size
         cd.writeUInt16LE(nameBytes.length, 28);      // file name length
         cd.writeUInt32LE(offset, 42);                // local header offset
         cdEntries.push(cd, nameBytes);
 
-        offset += 30 + nameBytes.length + file.data.length;
+        offset += 30 + nameBytes.length + file.compressed.length;
     }
 
     // End of central directory record (22 bytes).
@@ -334,8 +336,9 @@ export async function setup(options: SetupOptions): Promise<void> {
         await rename(cpythonSysroot, pythonSysrootDest);
 
         // Aggressively trim the Python sysroot to fit in the 128MB VM.
-        // Empirically, the ramfs image is ≈3.5× file sizes (block-alignment
-        // overhead + 2× image mapping), so file content must stay under ~36MB.
+        // Empirically, mkramfs adds ~43% filesystem overhead (block alignment,
+        // metadata) and the image is 2× content, so image ≈ 2.86× file sizes.
+        // To stay under 128MB: file sizes must stay under ~44MB.
         console.error("[setup] Trimming Python sysroot for 128MB VM...");
 
         // Phase 1: Remove top-level build artifacts and development files.
@@ -488,39 +491,52 @@ export async function setup(options: SetupOptions): Promise<void> {
         // Phase 6: Remove __pycache__ dirs (Python runs from .py sources).
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Phase 7: Consolidate stdlib into a zip to slash ramfs overhead.
+        // Phase 7: Create the ramfs directory structure.
+        // The python3.12 binary is loaded by nanvixd via the host path (not from
+        // the ramfs), so we exclude it from the ramfs to save ~36MB. Only the
+        // stdlib zip and eval wrapper go into the ramfs.
+        const ramfsDir = path.join(pythonSysrootDest, "ramfs");
+        const ramfsLibDir = path.join(ramfsDir, "lib");
+        await mkdir(ramfsLibDir, { recursive: true });
+
+        // Phase 7b: Consolidate stdlib into a compressed zip in the ramfs.
         // Python automatically adds lib/python312.zip to sys.path at startup
         // (see CPython Modules/getpath.py). This replaces ~50 loose files with
-        // one zip file, saving ~14MB of ramfs block-alignment overhead.
+        // one deflate-compressed zip file, saving both per-file ramfs overhead
+        // (~14MB of block-alignment waste) and raw file size (~60-70% compression
+        // on .py text).
         const pyLibDir312 = path.join(pythonSysrootDest, "lib", "python3.12");
-        const stdlibZipPath = path.join(pythonSysrootDest, "lib", "python312.zip");
+        const stdlibZipPath = path.join(ramfsLibDir, "python312.zip");
         if (await fileExists(pyLibDir312)) {
-            await createStoredZip(pyLibDir312, stdlibZipPath);
+            await createDeflatedZip(pyLibDir312, stdlibZipPath);
             await rm(pyLibDir312, { recursive: true, force: true });
-            if (verbose) console.error("[setup] Consolidated stdlib into lib/python312.zip");
+            if (verbose) console.error("[setup] Consolidated stdlib into ramfs/lib/python312.zip");
         }
+        // Remove the original lib/ (now empty or unused).
+        await rm(path.join(pythonSysrootDest, "lib"), { recursive: true, force: true }).catch(() => { });
 
-        // Phase 8: Bake the eval wrapper into the sysroot.
+        // Phase 8: Bake the eval wrapper into the ramfs.
         await writeFile(
-            path.join(pythonSysrootDest, "eval_stdin.py"),
+            path.join(ramfsDir, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
 
-        // Phase 9: Validate sysroot size fits in the 128MB VM.
-        // With the stdlib zip, the sysroot should be ~38MB (binary + zip + eval).
-        // Ramfs image ≈ 2× content, and with only 3 files the per-file overhead
-        // is negligible, so image ≈ 2× file_sizes ≈ 76MB, leaving ~52MB free.
-        const sysrootSize = await directorySize(pythonSysrootDest);
-        const sysrootMB = sysrootSize / 1024 / 1024;
-        const maxContentBytes = 30 * 1024 * 1024;
-        if (verbose || sysrootSize > maxContentBytes) {
-            console.error(`[setup] Python sysroot: ${sysrootMB.toFixed(1)}M (trimmed, with eval wrapper)`);
+        // Phase 9: Validate ramfs content size fits in the 128MB VM.
+        // Without the binary, the ramfs only contains the deflate-compressed
+        // stdlib zip (~4MB) and the eval wrapper (<1KB). mkramfs adds fixed
+        // filesystem overhead, then image = 2× content. This should be well
+        // under the 128MB limit.
+        const ramfsSize = await directorySize(ramfsDir);
+        const ramfsMB = ramfsSize / 1024 / 1024;
+        const maxRamfsBytes = 44 * 1024 * 1024;
+        if (verbose || ramfsSize > maxRamfsBytes) {
+            console.error(`[setup] Python ramfs content: ${ramfsMB.toFixed(1)}M (stdlib zip + eval wrapper)`);
         }
-        if (sysrootSize > maxContentBytes) {
+        if (ramfsSize > maxRamfsBytes) {
             console.error(
-                `[setup] WARNING: Python sysroot (${sysrootMB.toFixed(1)}M) exceeds ` +
-                `the estimated safe limit (~30M). The ramfs image may not fit ` +
+                `[setup] WARNING: Python ramfs content (${ramfsMB.toFixed(1)}M) exceeds ` +
+                `the estimated safe limit (~44M). The ramfs image may not fit ` +
                 `in the 128MB VM. Consider removing additional modules.`
             );
         }
