@@ -8,6 +8,9 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { PYTHON_EVAL_WRAPPER, JS_EVAL_WRAPPER } from "./sandbox.js";
 import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 
+// VM memory tier — 256MB on all platforms.
+const VM_MEMORY_TIER = "256mb";
+
 interface ReleaseAsset {
     name: string;
     browser_download_url: string;
@@ -86,7 +89,7 @@ async function removeDirectoriesByName(rootDir: string, name: string): Promise<v
  * Create a DEFLATE-compressed ZIP from all files under `dirPath`.
  * Python's zipimport uses this format (lib/python312.zip) to import modules.
  * Deflate compression significantly reduces the zip size (Python .py source
- * files compress ~60-70%), keeping the ramfs image within the 128MB VM limit.
+ * files compress ~60-70%), keeping the ramfs image within the VM memory limit.
  * Python's zipimport natively supports deflated entries via its built-in zlib.
  */
 async function createDeflatedZip(dirPath: string, outputPath: string): Promise<void> {
@@ -269,12 +272,12 @@ export async function setup(options: SetupOptions): Promise<void> {
     console.error("[setup] Fetching latest releases...");
 
     // 1. Download Nanvix sandbox.
-    //    Linux:   nanvix-microvm-standalone-release-128mb-*.tar.bz2
-    //    Windows: nanvix-windows-microvm-standalone-release-128mb-*.zip
+    //    Linux:   nanvix-microvm-standalone-release-256mb-*.tar.bz2
+    //    Windows: nanvix-windows-microvm-standalone-release-256mb-*.zip
     const nanvixRelease = await fetchLatestRelease("nanvix/nanvix");
     const nanvixAssetPattern = IS_WINDOWS
-        ? /nanvix-windows-microvm-standalone-release-128mb-.*\.zip$/
-        : /nanvix-microvm-standalone-release-128mb-.*\.tar\.bz2$/;
+        ? new RegExp(`nanvix-windows-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.zip$`)
+        : new RegExp(`nanvix-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.tar\\.bz2$`);
     const nanvixAsset = findAsset(nanvixRelease, nanvixAssetPattern);
 
     await downloadAndExtract(nanvixAsset, stagingDir, verbose);
@@ -315,19 +318,22 @@ export async function setup(options: SetupOptions): Promise<void> {
     await rm(stagingDir, { recursive: true, force: true });
     await mkdir(stagingDir, { recursive: true });
 
-    // 2. Download CPython runtime (microvm, standalone, 128mb).
-    //    Guest runtime — same archive on all host platforms.
+    // 2. Download CPython runtime (microvm, standalone, matching VM tier).
+    //    Same tarball on all platforms — stdlib is pure Python (.py) and the
+    //    guest binary is always ELF (runs inside the Nanvix microvm).
     console.error("[setup] Setting up Python runtime...");
     const cpythonRelease = await fetchLatestRelease("nanvix/cpython");
     const cpythonAsset = findAsset(
         cpythonRelease,
-        /cpython-microvm-standalone-128mb\.tar\.bz2$/
+        new RegExp(`cpython-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.bz2$`)
     );
 
     await downloadAndExtract(cpythonAsset, stagingDir, verbose);
 
-    // The CPython tarball extracts to sysroot/ with bin/python3.12 and lib/python3.12/.
-    // Keep it as a directory so we can inject user scripts at runtime before mkramfs.
+    // The CPython 256MB tarball extracts to:
+    //   sysroot/lib/python3.12/   — stdlib sources
+    //   bin/python.elf            — guest binary (outside sysroot/)
+    // We reassemble them into python-sysroot/ with bin/ and lib/.
     const cpythonSysroot = path.join(stagingDir, "sysroot");
     const pythonSysrootDest = path.join(nanvixHome, "runtimes", "python-sysroot");
 
@@ -335,11 +341,20 @@ export async function setup(options: SetupOptions): Promise<void> {
         await rm(pythonSysrootDest, { recursive: true, force: true });
         await rename(cpythonSysroot, pythonSysrootDest);
 
-        // Aggressively trim the Python sysroot to fit in the 128MB VM.
+        // The guest binary (python.elf) may be outside sysroot/ in the tarball.
+        // Locate it in staging and move it into the sysroot bin/ directory.
+        const stagedBin = await findFile(stagingDir, (name) => name === "python.elf");
+        if (stagedBin) {
+            const sysrootBinDir = path.join(pythonSysrootDest, "bin");
+            await mkdir(sysrootBinDir, { recursive: true });
+            await cp(stagedBin, path.join(sysrootBinDir, "python.elf"));
+        }
+
+        // Trim the Python sysroot to fit in the VM.
         // Empirically, mkramfs adds ~43% filesystem overhead (block alignment,
         // metadata) and the image is 2× content, so image ≈ 2.86× file sizes.
-        // To stay under 128MB: file sizes must stay under ~44MB.
-        console.error("[setup] Trimming Python sysroot for 128MB VM...");
+        // For a 256MB VM, file sizes must stay under ~89MB.
+        console.error(`[setup] Trimming Python sysroot for ${VM_MEMORY_TIER.toUpperCase()} VM...`);
 
         // Phase 1: Remove top-level build artifacts and development files.
         for (const target of ["include", "share", "lib/pkgconfig"]) {
@@ -358,12 +373,12 @@ export async function setup(options: SetupOptions): Promise<void> {
             }
         }
 
-        // Phase 3: Clean bin/ — keep only the python3.12 interpreter binary.
+        // Phase 3: Clean bin/ — keep only the python.elf interpreter binary.
         const binDir = path.join(pythonSysrootDest, "bin");
         if (await fileExists(binDir)) {
             const binEntries = await readdir(binDir, { withFileTypes: true });
             for (const entry of binEntries) {
-                if (entry.name !== "python3.12") {
+                if (entry.name !== "python.elf") {
                     await rm(path.join(binDir, entry.name), { recursive: true, force: true });
                 }
             }
@@ -372,7 +387,7 @@ export async function setup(options: SetupOptions): Promise<void> {
         // Phase 4: Strip debug symbols from the Python binary.
         // Try llvm-strip first (handles ELF on any host, including Windows),
         // then fall back to strip (Linux/macOS).
-        const pythonBin = path.join(pythonSysrootDest, "bin", "python3.12");
+        const pythonBin = path.join(pythonSysrootDest, "bin", "python.elf");
         if (await fileExists(pythonBin)) {
             let stripped = false;
             for (const cmd of ["llvm-strip", "strip"]) {
@@ -492,7 +507,7 @@ export async function setup(options: SetupOptions): Promise<void> {
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
         // Phase 7: Create the ramfs directory structure.
-        // The python3.12 binary is loaded by nanvixd via the host path (not from
+        // The python.elf binary is loaded by nanvixd via the host path (not from
         // the ramfs), so we exclude it from the ramfs to save ~36MB. Only the
         // stdlib zip and eval wrapper go into the ramfs.
         const ramfsDir = path.join(pythonSysrootDest, "ramfs");
@@ -522,22 +537,24 @@ export async function setup(options: SetupOptions): Promise<void> {
             "utf-8"
         );
 
-        // Phase 9: Validate ramfs content size fits in the 128MB VM.
+        // Phase 9: Validate ramfs content size fits in the VM.
         // Without the binary, the ramfs only contains the deflate-compressed
         // stdlib zip (~4MB) and the eval wrapper (<1KB). mkramfs adds fixed
         // filesystem overhead, then image = 2× content. This should be well
-        // under the 128MB limit.
+        // under the VM limit.
         const ramfsSize = await directorySize(ramfsDir);
         const ramfsMB = ramfsSize / 1024 / 1024;
-        const maxRamfsBytes = 44 * 1024 * 1024;
+        const vmSizeMB = parseInt(VM_MEMORY_TIER, 10);
+        const maxRamfsBytes = Math.floor(vmSizeMB / 2.86) * 1024 * 1024;
+        const maxRamfsMB = Math.floor(vmSizeMB / 2.86);
         if (verbose || ramfsSize > maxRamfsBytes) {
             console.error(`[setup] Python ramfs content: ${ramfsMB.toFixed(1)}M (stdlib zip + eval wrapper)`);
         }
         if (ramfsSize > maxRamfsBytes) {
             console.error(
                 `[setup] WARNING: Python ramfs content (${ramfsMB.toFixed(1)}M) exceeds ` +
-                `the estimated safe limit (~44M). The ramfs image may not fit ` +
-                `in the 128MB VM. Consider removing additional modules.`
+                `the estimated safe limit (~${maxRamfsMB}M). The ramfs image may not fit ` +
+                `in the ${VM_MEMORY_TIER.toUpperCase()} VM. Consider removing additional modules.`
             );
         }
     } else {
@@ -548,18 +565,18 @@ export async function setup(options: SetupOptions): Promise<void> {
     await rm(stagingDir, { recursive: true, force: true });
     await mkdir(stagingDir, { recursive: true });
 
-    // 3. Download QuickJS runtime (microvm, standalone, 128mb).
-    //    Guest runtime — same archive on all host platforms.
+    // 3. Download QuickJS runtime (microvm, standalone, matching VM tier).
+    //    Guest binary must match the VM memory tier.
     console.error("[setup] Setting up QuickJS runtime...");
     const quickjsRelease = await fetchLatestRelease("nanvix/quickjs");
     const quickjsAsset = findAsset(
         quickjsRelease,
-        /quickjs-microvm-standalone-128mb\.tar\.bz2$/
+        new RegExp(`quickjs-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.bz2$`)
     );
 
     await downloadAndExtract(quickjsAsset, stagingDir, verbose);
 
-    // QuickJS extracts to quickjs-microvm-standalone-128mb/ with bin/qjs.elf.
+    // QuickJS extracts to quickjs-microvm-standalone-<tier>/ with bin/qjs.elf.
     // Build a sysroot directory for the sandbox runner.
     const qjsSysrootDest = path.join(nanvixHome, "runtimes", "quickjs-sysroot");
     const qjsBin = await findFile(

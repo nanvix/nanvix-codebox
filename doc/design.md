@@ -9,7 +9,7 @@ The hypervisor boundary provides hardware-enforced isolation (KVM on Linux, WHP 
 ensuring that user code cannot escape the sandbox under any circumstances.
 
 It uses the Copilot SDK to generate Python and JavaScript code, then executes it inside a
-Nanvix microvm sandbox with 128MB of memory.
+Nanvix microvm sandbox with 256MB of memory.
 
 ## Architecture
 
@@ -46,8 +46,8 @@ the runtime binary as the initrd, and the base64-encoded code flows through stdi
 - The guest VM is fully isolated by the hypervisor — it has no access to the host filesystem, network, or processes
 - The ramfs image mounts at `/` inside the guest VM
 - `PYTHONHOME=/` (not `/sysroot`) because the ramfs root IS the sysroot
-- The runtime binary (e.g. `python3.12`) is specified by its **host** path — nanvixd loads it as initrd
-- The sysroot is trimmed during setup to ~26MB (from ~160MB) to fit within 128MB VM memory
+- The runtime binary (e.g. `python.elf`) is specified by its **host** path — nanvixd loads it as initrd
+- The sysroot is trimmed during setup to ~26MB (from ~160MB) to fit within VM memory
 
 ## How It Works
 
@@ -65,13 +65,13 @@ and `.exe` on Windows. Guest binaries always use ELF format regardless of the ho
 
 | Component       | Repository                                          | Description                  |
 |-----------------|-----------------------------------------------------|------------------------------|
-| Nanvix Sandbox  | [nanvix/nanvix](https://github.com/nanvix/nanvix)   | microvm standalone 128MB     |
+| Nanvix Sandbox  | [nanvix/nanvix](https://github.com/nanvix/nanvix)   | microvm standalone 256MB     |
 | CPython Runtime | [nanvix/cpython](https://github.com/nanvix/cpython) | Python 3.12 for Nanvix       |
 | QuickJS Runtime | [nanvix/quickjs](https://github.com/nanvix/quickjs) | QuickJS JS engine for Nanvix |
 
 ### Sysroot Trimming
 
-The CPython sysroot is trimmed during setup to fit within the 128MB VM:
+The CPython sysroot is trimmed during setup to fit within the VM memory limit:
 
 - Removes `libpython3.12.a` (53MB static library)
 - Removes `config-3.12` (53MB build configs)
@@ -95,7 +95,7 @@ echo -n "print('Hello from Nanvix!')" | base64 > /tmp/input.b64
 
 # Run in the sandbox (eval wrapper reads base64 from stdin)
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python3.12 \
+  -- ./runtimes/python-sysroot/bin/python.elf \
   "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
   < /tmp/input.b64
 
@@ -110,7 +110,7 @@ for i in range(10):
     print(f"fib({i}) = {fib(i)}")' | base64 > /tmp/fib.b64
 
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python3.12 \
+  -- ./runtimes/python-sysroot/bin/python.elf \
   "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
   < /tmp/fib.b64
 ```

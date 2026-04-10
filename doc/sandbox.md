@@ -12,7 +12,7 @@ boundary provides hardware-enforced isolation:
 - **No host filesystem access** — the guest sees only a FAT32 ramfs mounted at `/`
 - **No network access** — no virtual NIC is attached to the guest
 - **No host process visibility** — the guest kernel is a separate Nanvix instance
-- **Memory-limited** — 128 MB total VM memory
+- **Memory-limited** — 256 MB total VM memory
 - **Time-limited** — 120-second execution timeout (configurable)
 
 The sandbox is fully air-gapped. Code running inside the VM cannot interact with the host
@@ -33,7 +33,7 @@ on Linux and `.exe` on Windows; guest binaries always use ELF format.
 ```text
 1. mkramfs builds the sysroot directory into a FAT32 image
 2. nanvixd boots the microvm:
-   - Loads the runtime binary (e.g. python3.12) as initrd
+   - Loads the runtime binary (e.g. python.elf) as initrd
    - Mounts the ramfs image at /
    - Passes program arguments and environment variables
 3. The runtime binary executes the eval wrapper (eval_stdin.py or eval_stdin.js)
@@ -46,14 +46,14 @@ on Linux and `.exe` on Windows; guest binaries always use ELF format.
 ### nanvixd Invocation
 
 > **Note:** The examples below use `.elf` (Linux). On Windows, substitute `nanvixd.exe` and
-> `mkramfs.exe` for the host binaries. Guest binaries (`python3.12`, `qjs.elf`) are unchanged.
+> `mkramfs.exe` for the host binaries. Guest binaries (`python.elf`, `qjs.elf`) are unchanged.
 
 ```bash
 nanvixd.elf \
   -bin-dir ./bin \
   -ramfs /tmp/nanvix-python-<pid>.img \
   -- \
-  ./runtimes/python-sysroot/bin/python3.12 \
+  ./runtimes/python-sysroot/bin/python.elf \
   "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
 ```
 
@@ -73,7 +73,7 @@ The format for the combined argument is: `<program-args>;<env-vars>`
 
 | Property | Value |
 | --- | --- |
-| Binary | `runtimes/python-sysroot/bin/python3.12` |
+| Binary | `runtimes/python-sysroot/bin/python.elf` |
 | Sysroot | `runtimes/python-sysroot/` (~26 MB trimmed) |
 | Eval wrapper | `/eval_stdin.py` (inside ramfs) |
 | Program args | `-B /eval_stdin.py` |
@@ -108,7 +108,7 @@ or `Buffer`, so the eval wrapper includes a custom base64 decoder.
 
 ## Sysroot Trimming
 
-The CPython sysroot is trimmed during setup to fit within the 128 MB VM memory limit:
+The CPython sysroot is trimmed during setup to fit within the VM memory limit:
 
 | Removed | Size | Reason |
 | --- | --- | --- |
@@ -151,7 +151,7 @@ echo -n "print('Hello from Nanvix!')" | base64 > /tmp/input.b64
 
 # Run in the sandbox
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python3.12 \
+  -- ./runtimes/python-sysroot/bin/python.elf \
   "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
   < /tmp/input.b64
 ```
@@ -166,7 +166,7 @@ $code = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("print('Hello f
 $code | Out-File -NoNewline $env:TEMP\input.b64
 
 Get-Content $env:TEMP\input.b64 | .\bin\nanvixd.exe -bin-dir .\bin -ramfs $env:TEMP\rootfs.img `
-  -- .\runtimes\python-sysroot\bin\python3.12 `
+  -- .\runtimes\python-sysroot\bin\python.elf `
   "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
 ```
 

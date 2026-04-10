@@ -80,16 +80,17 @@ nanvix/
 │   └── mkramfs.elf (.exe on Windows)  # FAT32 ramfs image builder
 └── runtimes/
     ├── python-sysroot/    # Trimmed CPython 3.12 sysroot (~26 MB)
-    │   ├── bin/python3.12
-    │   ├── lib/python3.12/
-    │   └── eval_stdin.py
+    │   ├── bin/python.elf
+    │   ├── ramfs/
+    │   │   ├── lib/python312.zip
+    │   │   └── eval_stdin.py
     └── quickjs-sysroot/   # QuickJS sysroot
         ├── bin/qjs.elf
         └── eval_stdin.js
 ```
 
 > **Note:** Host binaries (`nanvixd`, `mkramfs`) use `.elf` on Linux and `.exe` on Windows.
-> Guest binaries (`python3.12`, `qjs.elf`) always use ELF format regardless of host OS.
+> Guest binaries (`python.elf`, `qjs.elf`) always use ELF format regardless of host OS.
 
 ## Running Your First Prompt
 

@@ -7,7 +7,7 @@ description: "Add a new language runtime to the Nanvix sandbox. Use when: adding
 
 ## Overview
 
-Adding a new runtime to nanvix-copilot requires changes across four files and creation of a new sysroot with an eval wrapper. Each runtime runs inside a 128MB microvm with no network or host filesystem access.
+Adding a new runtime to nanvix-copilot requires changes across four files and creation of a new sysroot with an eval wrapper. Each runtime runs inside a 256MB microvm with no network or host filesystem access.
 
 ## Procedure
 
@@ -78,7 +78,7 @@ In `src/setup.ts`, add a section to download and extract the new runtime from Gi
 3. `downloadAndExtract()` to the staging directory
 4. Move the extracted sysroot to `nanvixHome/runtimes/newlang-sysroot/`
 5. Bake the eval wrapper: `writeFile(path.join(sysrootDest, "eval_stdin.newlang"), NEWLANG_EVAL_WRAPPER)`
-6. Trim unnecessary files to fit within 128MB VM memory
+6. Trim unnecessary files to fit within VM memory
 
 ### 6. Update the CLI
 
@@ -96,7 +96,7 @@ In `src/copilot.ts`, add a constraint line for the new runtime in the `agentProm
 
 ## Constraints
 
-- **128MB VM memory**: The sysroot + interpreter must fit in RAM. Aggressively trim build artifacts, tests, and documentation.
+- **256MB VM memory**: The sysroot + interpreter must fit in RAM. Aggressively trim build artifacts, tests, and documentation.
 - **No network**: The runtime cannot download packages at execution time.
 - **Stdin transport**: All user code goes through base64-encoded stdin — no file injection into the guest.
 - **FAT32 ramfs**: The filesystem is FAT32; respect filename and path length limits.
