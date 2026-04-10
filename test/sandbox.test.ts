@@ -100,9 +100,9 @@ describe("platform", () => {
     });
 
     it("should not change guest binary names", () => {
-        // Guest binaries (python3.12, qjs.elf) are always ELF and are not
+        // Guest binaries (python.elf, qjs.elf) are always ELF and are not
         // affected by hostBinaryName(). This test documents the intent.
-        const guestBin = "python3.12";
-        assert.equal(guestBin, "python3.12");
+        const guestBin = "python.elf";
+        assert.equal(guestBin, "python.elf");
     });
 });

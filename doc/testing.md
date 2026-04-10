@@ -57,7 +57,7 @@ Tests the platform detection and host binary name resolution.
 | `hostBinaryName() returns platform extension` | Verifies `.elf` on Linux and `.exe` on Windows |
 | `hostBinaryPath() resolves full path` | Verifies correct path construction under `nanvix/bin/` |
 | `IS_WINDOWS matches process.platform` | Verifies the constant agrees with the Node.js runtime |
-| `should not change guest binary names` | Documents that guest binaries (`python3.12`, `qjs.elf`) are always ELF regardless of host OS |
+| `should not change guest binary names` | Documents that guest binaries (`python.elf`, `qjs.elf`) are always ELF regardless of host OS |
 
 ## What's Tested vs. Not Tested
 

@@ -35,7 +35,7 @@ Each runtime is defined in `getRuntimeConfig()`:
 
 **Python:**
 - Sysroot: `nanvixHome/runtimes/python-sysroot`
-- Binary: `bin/python3.12`
+- Binary: `bin/python.elf`
 - Args: `-B /eval_stdin.py`
 - Env: `PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1`
 

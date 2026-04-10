@@ -260,7 +260,7 @@ Download and prepare Nanvix sandbox binaries and runtime sysroots from GitHub Re
 Downloads three components:
 
 1. **Nanvix microvm** (`nanvix/nanvix`) — `nanvixd` and `mkramfs` (`.elf` on Linux, `.exe` on Windows)
-2. **CPython runtime** (`nanvix/cpython`) — Python 3.12 sysroot (trimmed for 128 MB VM)
+2. **CPython runtime** (`nanvix/cpython`) — Python 3.12 sysroot (trimmed for VM memory limit)
 3. **QuickJS runtime** (`nanvix/quickjs`) — QuickJS binary
 
 After downloading, the function:
@@ -340,5 +340,5 @@ hostBinaryPath("./nanvix", "mkramfs");
 // "./nanvix/bin/mkramfs.elf" on Linux
 ```
 
-> **Note:** Guest binaries (`python3.12`, `qjs.elf`) always use ELF format and are not
+> **Note:** Guest binaries (`python.elf`, `qjs.elf`) always use ELF format and are not
 > affected by `hostBinaryName()`. Only host-side tools (`nanvixd`, `mkramfs`) vary by platform.

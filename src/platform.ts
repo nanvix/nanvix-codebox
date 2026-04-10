@@ -11,7 +11,7 @@ export const IS_WINDOWS = os.platform() === "win32";
  * mkramfs).  On Linux they use the `.elf` extension; on Windows they use
  * `.exe`.
  *
- * Guest binaries (e.g. python3.12, qjs.elf) always use ELF format because
+ * Guest binaries (e.g. python.elf, qjs.elf) always use ELF format because
  * they execute inside the Nanvix microvm, regardless of the host OS.
  */
 export function hostBinaryName(baseName: string): string {

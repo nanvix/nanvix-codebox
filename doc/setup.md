@@ -25,7 +25,7 @@ Setup fetches the latest releases from three GitHub repositories:
 
 ### 1. Nanvix Sandbox (`nanvix/nanvix`)
 
-**Asset pattern:** `nanvix-microvm-standalone-release-128mb-*.tar.bz2` (Linux) or `nanvix-microvm-standalone-release-128mb-*.zip` (Windows)
+**Asset pattern:** `nanvix-microvm-standalone-release-256mb-*.tar.bz2` (Linux) or `nanvix-windows-microvm-standalone-release-256mb-*.zip` (Windows)
 
 Provides:
 
@@ -35,10 +35,10 @@ Provides:
 
 ### 2. CPython Runtime (`nanvix/cpython`)
 
-**Asset pattern:** `cpython-microvm-standalone-128mb.tar.bz2`
+**Asset pattern:** `cpython-microvm-standalone-256mb.tar.bz2` (Linux) or `cpython-windows-microvm-standalone-256mb-*.zip` (Windows)
 
 Provides a full CPython 3.12 sysroot with the interpreter binary and standard library.
-After extraction, the sysroot is **trimmed** to fit within the 128 MB VM memory limit.
+After extraction, the sysroot is **trimmed** to fit within the 256 MB VM memory limit.
 
 **Trimmed artifacts:**
 
@@ -65,7 +65,7 @@ After trimming, the `eval_stdin.py` wrapper is written into the sysroot root dir
 
 ### 3. QuickJS Runtime (`nanvix/quickjs`)
 
-**Asset pattern:** `quickjs-microvm-standalone-128mb.tar.bz2`
+**Asset pattern:** `quickjs-microvm-standalone-256mb.tar.bz2`
 
 Provides the `qjs.elf` binary. Setup creates a minimal sysroot directory with:
 
@@ -91,12 +91,10 @@ nanvix/
 └── runtimes/
     ├── python-sysroot/
     │   ├── bin/
-    │   │   ├── python3.12
-    │   │   └── (other Python symlinks)
-    │   ├── lib/
-    │   │   └── python3.12/
-    │   │       └── (standard library .py files)
-    │   └── eval_stdin.py
+    │   │   └── python.elf
+    │   ├── ramfs/
+    │   │   ├── lib/python312.zip
+    │   │   └── eval_stdin.py
     └── quickjs-sysroot/
         ├── bin/
         │   └── qjs.elf
