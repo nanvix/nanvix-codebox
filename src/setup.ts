@@ -272,12 +272,12 @@ export async function setup(options: SetupOptions): Promise<void> {
     console.error("[setup] Fetching latest releases...");
 
     // 1. Download Nanvix sandbox.
-    //    Linux:   nanvix-microvm-standalone-release-256mb-*.tar.bz2
-    //    Windows: nanvix-windows-microvm-standalone-release-256mb-*.zip
+    //    Linux:   nanvix-x86-microvm-standalone-release-256mb-*.tar.bz2
+    //    Windows: nanvix-windows-x86-microvm-standalone-release-256mb-*.zip
     const nanvixRelease = await fetchLatestRelease("nanvix/nanvix");
     const nanvixAssetPattern = IS_WINDOWS
-        ? new RegExp(`nanvix-windows-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.zip$`)
-        : new RegExp(`nanvix-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.tar\\.bz2$`);
+        ? new RegExp(`nanvix-windows-x86-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.zip$`)
+        : new RegExp(`nanvix-x86-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.tar\\.bz2$`);
     const nanvixAsset = findAsset(nanvixRelease, nanvixAssetPattern);
 
     await downloadAndExtract(nanvixAsset, stagingDir, verbose);
