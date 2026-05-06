@@ -25,7 +25,7 @@ Setup fetches the latest releases from three GitHub repositories:
 
 ### 1. Nanvix Sandbox (`nanvix/nanvix`)
 
-**Asset pattern:** `nanvix-microvm-standalone-release-256mb-*.tar.bz2` (Linux) or `nanvix-windows-microvm-standalone-release-256mb-*.zip` (Windows)
+**Asset pattern:** `nanvix-x86-microvm-standalone-release-256mb-*.tar.bz2` (Linux) or `nanvix-windows-x86-microvm-standalone-release-256mb-*.zip` (Windows)
 
 Provides:
 
