@@ -35,7 +35,7 @@ Provides:
 
 ### 2. CPython Runtime (`nanvix/cpython`)
 
-**Asset pattern:** `cpython-microvm-standalone-256mb.tar.bz2` (Linux) or `cpython-windows-microvm-standalone-256mb-*.zip` (Windows)
+**Asset pattern:** `cpython-microvm-standalone-256mb.tar.bz2`
 
 Provides a full CPython 3.12 sysroot with the interpreter binary and standard library.
 After extraction, the sysroot is **trimmed** to fit within the 256 MB VM memory limit.
@@ -65,7 +65,7 @@ After trimming, the `eval_stdin.py` wrapper is written into the sysroot root dir
 
 ### 3. QuickJS Runtime (`nanvix/quickjs`)
 
-**Asset pattern:** `quickjs-microvm-standalone-256mb.tar.bz2`
+**Asset pattern:** `quickjs-microvm-standalone-256mb.tar.gz`
 
 Provides the `qjs.elf` binary. Setup creates a minimal sysroot directory with:
 

@@ -223,13 +223,14 @@ async function downloadAndExtract(
             stdio: verbose ? "inherit" : "pipe",
         });
     } else {
-        // .tar.bz2 — works on both Linux (GNU tar) and Windows 10+ (bsdtar).
+        // .tar.bz2 or .tar.gz — works on both Linux (GNU tar) and Windows 10+ (bsdtar).
         // On Windows, tar may emit non-fatal warnings for Unix symlinks it
         // cannot create.  These symlinks (e.g. python3 → python3.12) are
         // non-essential and trimmed during sysroot cleanup, so we allow the
         // extraction to continue despite errors.
+        const tarFlag = archivePath.endsWith(".tar.bz2") ? "-xjf" : "-xzf";
         try {
-            execSync(`tar -xjf "${archivePath}" -C "${destDir}"`, {
+            execSync(`tar ${tarFlag} "${archivePath}" -C "${destDir}"`, {
                 stdio: verbose ? "inherit" : "pipe",
             });
         } catch {
@@ -571,7 +572,7 @@ export async function setup(options: SetupOptions): Promise<void> {
     const quickjsRelease = await fetchLatestRelease("nanvix/quickjs");
     const quickjsAsset = findAsset(
         quickjsRelease,
-        new RegExp(`quickjs-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.bz2$`)
+        new RegExp(`quickjs-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.gz$`)
     );
 
     await downloadAndExtract(quickjsAsset, stagingDir, verbose);
