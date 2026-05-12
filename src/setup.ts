@@ -326,7 +326,7 @@ export async function setup(options: SetupOptions): Promise<void> {
     const cpythonRelease = await fetchLatestRelease("nanvix/cpython");
     const cpythonAsset = findAsset(
         cpythonRelease,
-        new RegExp(`cpython-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.bz2$`)
+        new RegExp(`cpython-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.gz$`)
     );
 
     await downloadAndExtract(cpythonAsset, stagingDir, verbose);
