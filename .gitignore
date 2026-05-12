@@ -7,6 +7,16 @@ dist/
 # Nanvix binaries (downloaded via setup)
 nanvix/
 
+# nanvix-zutil generated dirs (.nanvix/*.toml, .nanvix/z.py are tracked)
+.nanvix/venv/
+.nanvix/cache/
+.nanvix/sysroot/
+.nanvix/buildroot/
+.nanvix/runtimes/
+.nanvix/env.json
+.nanvix/nanvix.lock
+.nanvix/__pycache__/
+
 # OS / Editor
 .DS_Store
 *.swp

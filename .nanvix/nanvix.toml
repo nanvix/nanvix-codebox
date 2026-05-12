@@ -1,0 +1,4 @@
+[package]
+name = "nanvix-copilot"
+version = "0.1.0"
+nanvix-version = "latest"
