@@ -1,5 +1,5 @@
-import { spawn, execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, accessSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { writeFileSync, mkdtempSync, rmSync, accessSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { encodeBase64 } from "./encoding.js";
@@ -68,6 +68,8 @@ interface RuntimeConfig {
     sysrootDir: string;
     /** Host path to the runtime binary (loaded as initrd by nanvixd). */
     hostBinPath: string;
+    /** Program name used as argv[0] in the bundled multibinary cmdline. */
+    progName: string;
     /** Runtime-specific flags + eval wrapper path (the "program args" portion). */
     progArgs: string;
     /** Environment variables to inject (after the ";" separator). */
@@ -81,6 +83,7 @@ function getRuntimeConfig(runtime: Runtime, nanvixHome: string): RuntimeConfig {
                 sysrootDir: path.join(nanvixHome, "runtimes", "python-sysroot", "ramfs"),
                 // Guest binary — always ELF regardless of host OS.
                 hostBinPath: path.join(nanvixHome, "runtimes", "python-sysroot", "bin", "python.elf"),
+                progName: "python",
                 // -B = don't write .pyc files
                 progArgs: "-B /eval_stdin.py",
                 envVars: "PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1",
@@ -90,6 +93,7 @@ function getRuntimeConfig(runtime: Runtime, nanvixHome: string): RuntimeConfig {
                 sysrootDir: path.join(nanvixHome, "runtimes", "quickjs-sysroot"),
                 // Guest binary — always ELF regardless of host OS.
                 hostBinPath: path.join(nanvixHome, "runtimes", "quickjs-sysroot", "bin", "qjs.elf"),
+                progName: "qjs",
                 // --std = make 'std' and 'os' modules available
                 progArgs: "--std /eval_stdin.js",
                 envVars: "",
@@ -108,9 +112,14 @@ function getRuntimeConfig(runtime: Runtime, nanvixHome: string): RuntimeConfig {
  * Flow:
  *   1. Base64-encode the user script
  *   2. Run mkramfs on the pre-built sysroot (already contains eval wrapper)
- *   3. Invoke nanvixd with the wrapper as the program argument
- *   4. Pipe the base64-encoded user script via stdin
- *   5. Capture stdout/stderr
+ *   3. Run mkimage to build a multibinary boot image that bundles the system
+ *      daemons (procd, memd, vfsd) together with the runtime binary. The
+ *      daemons are required for the guest to service filesystem syscalls
+ *      (open/read/getcwd are routed to vfsd); booting the bare runtime ELF
+ *      alone leaves vfsd unspawned and every file access fails.
+ *   4. Invoke nanvixd with the multibinary image as the boot program
+ *   5. Pipe the base64-encoded user script via stdin
+ *   6. Capture stdout/stderr
  */
 export async function runInSandbox(options: SandboxOptions): Promise<SandboxResult> {
     const {
@@ -123,9 +132,18 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
     } = options;
 
     const absNanvixHome = path.resolve(nanvixHome);
+    const binDir = path.join(absNanvixHome, "bin");
     const nanvixd = hostBinaryPath(absNanvixHome, "nanvixd");
     const mkramfs = hostBinaryPath(absNanvixHome, "mkramfs");
+    const mkimage = hostBinaryPath(absNanvixHome, "mkimage");
     const config = getRuntimeConfig(runtime, absNanvixHome);
+
+    // Guest daemons bundled into the boot image. Order is significant: the
+    // kernel assigns pids in spawn order (procd, memd, vfsd) and the guest
+    // libc routes filesystem syscalls to vfsd at its fixed pid. Always ELF.
+    const procd = path.join(binDir, "procd.elf");
+    const memd = path.join(binDir, "memd.elf");
+    const vfsd = path.join(binDir, "vfsd.elf");
 
     const logsDir = path.join(absNanvixHome, "logs");
 
@@ -147,32 +165,63 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
         );
     }
 
-    // Build a ramfs image from the sysroot (contains runtime + eval wrapper).
-    const ramfsImage = path.join(os.tmpdir(), `nanvix-${runtime}-${process.pid}.img`);
+    // Verify the host tools and guest daemons required for the boot image.
+    for (const required of [mkramfs, mkimage, config.hostBinPath, procd, memd, vfsd]) {
+        try {
+            accessSync(required);
+        } catch {
+            throw new Error(
+                `Required Nanvix binary not found: ${required}\n` +
+                `Run "nanvix-copilot --setup" to download sandbox binaries.`
+            );
+        }
+    }
+
+    // Each invocation gets its own temp directory so concurrent runs cannot
+    // race on shared image paths. The directory (and both images) are removed
+    // in the finally block below.
+    const workDir = mkdtempSync(path.join(os.tmpdir(), `nanvix-${runtime}-`));
+    const ramfsImage = path.join(workDir, "ramfs.img");
+    const bootImage = path.join(workDir, "boot.img");
 
     try {
         if (verbose) {
             console.error(`[sandbox] Building ramfs from: ${config.sysrootDir}`);
         }
 
-        execSync(`"${mkramfs}" -o "${ramfsImage}" "${config.sysrootDir}"`, {
+        execFileSync(mkramfs, ["-o", ramfsImage, config.sysrootDir], {
             stdio: verbose ? "inherit" : "pipe",
         });
 
-        // Build nanvixd arguments.
-        // The eval wrapper is the program; user code arrives via stdin.
+        // Build the guest cmdline baked into the boot image. The multibinary
+        // format embeds each program's cmdline, so the runtime's args and env
+        // must be supplied here (nanvixd ignores trailing args for multibin
+        // images). Format: "<argv0> <args>;<env>". The first ";" separates
+        // application arguments from environment variables.
         const progArgs = args
             ? `${config.progArgs} ${args}`
             : config.progArgs;
         const envSuffix = config.envVars ? `;${config.envVars}` : "";
-        const combinedArgs = `${progArgs}${envSuffix}`;
+        const cmdline = `${config.progName} ${progArgs}${envSuffix}`;
+
+        // Bundle the system daemons and the runtime into a multibinary boot
+        // image. mkimage splits each entry on the first ";" only, so the
+        // runtime's "<args>;<env>" cmdline survives intact.
+        execFileSync(mkimage, [
+            "-o", bootImage,
+            `${procd};procd`,
+            `${memd};memd`,
+            `${vfsd};vfsd`,
+            `${config.hostBinPath};${cmdline}`,
+        ], {
+            stdio: verbose ? "inherit" : "pipe",
+        });
 
         const nanvixdArgs = [
-            "-bin-dir", path.join(absNanvixHome, "bin"),
+            "-bin-dir", binDir,
             "-ramfs", ramfsImage,
             "--",
-            config.hostBinPath,
-            combinedArgs,
+            bootImage,
         ];
 
         if (verbose) {
@@ -261,7 +310,7 @@ export async function runInSandbox(options: SandboxOptions): Promise<SandboxResu
             child.stdin.end();
         });
     } finally {
-        // Clean up the temp ramfs image.
-        try { unlinkSync(ramfsImage); } catch { /* ignore */ }
+        // Clean up the temp work directory (ramfs + boot image).
+        try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
 }
