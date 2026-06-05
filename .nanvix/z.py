@@ -40,20 +40,25 @@ class CopilotSetup(ZScript):
         gh_token = os.environ.get("GH_TOKEN")
 
         # Download CPython runtime.
+        #
+        # The trailing "." anchors the prefix to the archive extension so it
+        # matches the runtime tarball (``...256mb.tar.gz``) but NOT the
+        # build-time SDK variant (``...256mb-buildroot.tar.gz``), which sorts
+        # ahead of it under bare-prefix matching and lacks ``bin/python.elf``.
         log.info("Setting up CPython runtime...")
         self._download_runtime(
             repo="nanvix/cpython",
-            asset_prefix="cpython-microvm-standalone-256mb",
+            asset_prefix="cpython-microvm-standalone-256mb.",
             dest=runtimes_dir / "cpython",
             cache=cache_dir,
             gh_token=gh_token,
         )
 
-        # Download QuickJS runtime.
+        # Download QuickJS runtime.  Trailing "." anchors the prefix as above.
         log.info("Setting up QuickJS runtime...")
         self._download_runtime(
             repo="nanvix/quickjs",
-            asset_prefix="quickjs-microvm-standalone-256mb",
+            asset_prefix="quickjs-microvm-standalone-256mb.",
             dest=runtimes_dir / "quickjs",
             cache=cache_dir,
             gh_token=gh_token,

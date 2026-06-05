@@ -9,6 +9,13 @@ import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 // VM memory tier — 256MB on all platforms.
 const VM_MEMORY_TIER = "256mb";
 
+// Docker image passed to `nanvix-zutil setup --with-docker`. nanvix-zutil's
+// setup subcommand requires a toolchain image, but nanvix-copilot is
+// download-only (it never compiles inside the container), so the image is
+// validated/persisted but never used for a build. Override via the
+// NANVIX_DOCKER_IMAGE environment variable if needed.
+const DEFAULT_DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-python:latest";
+
 interface SetupOptions {
     nanvixHome: string;
     verbose?: boolean;
@@ -145,6 +152,11 @@ async function createDeflatedZip(dirPath: string, outputPath: string): Promise<v
  * Invoke `./z setup` (nanvix_zutil) to download and extract all
  * dependencies into `.nanvix/`.  The bootstrap scripts auto-install
  * nanvix-zutil into `.nanvix/venv/` when it is not already present.
+ *
+ * nanvix-zutil's `setup` subcommand requires a `--with-docker IMAGE`
+ * argument (the image is persisted for later build/release commands).
+ * nanvix-copilot never builds inside the container, so the image is only
+ * used to satisfy the CLI; on Linux it is still pulled by zutil.
  */
 function runZutilSetup(projectRoot: string, verbose: boolean): void {
     const env = { ...process.env };
@@ -153,15 +165,18 @@ function runZutilSetup(projectRoot: string, verbose: boolean): void {
         env.GH_TOKEN = env.GITHUB_TOKEN;
     }
 
+    const dockerImage = env.NANVIX_DOCKER_IMAGE || DEFAULT_DOCKER_IMAGE;
+    const setupArgs = ["setup", "--with-docker", dockerImage];
+
     const result = IS_WINDOWS
         ? spawnSync(
               "powershell.exe",
-              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(projectRoot, "z.ps1"), "setup"],
+              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(projectRoot, "z.ps1"), ...setupArgs],
               { cwd: projectRoot, env, stdio: verbose ? "inherit" : "pipe" },
           )
         : spawnSync(
               "bash",
-              [path.join(projectRoot, "z.sh"), "setup"],
+              [path.join(projectRoot, "z.sh"), ...setupArgs],
               { cwd: projectRoot, env, stdio: verbose ? "inherit" : "pipe" },
           );
 
