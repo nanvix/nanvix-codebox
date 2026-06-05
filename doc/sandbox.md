@@ -22,50 +22,69 @@ machine under any circumstances.
 
 | Binary | Purpose |
 | --- | --- |
-| `nanvixd.elf` / `nanvixd.exe` | Nanvix microvm hypervisor daemon. Boots the guest VM with a given ramfs and runtime binary |
+| `nanvixd.elf` / `nanvixd.exe` | Nanvix microvm hypervisor daemon. Boots the guest VM with a given ramfs and boot image |
 | `mkramfs.elf` / `mkramfs.exe` | Builds a FAT32 ramfs image from a host directory |
+| `mkimage.elf` / `mkimage.exe` | Builds a multibinary boot image bundling the system daemons and the runtime |
+| `procd.elf`, `memd.elf`, `vfsd.elf` | Guest system daemons (process registrar, memory, virtual filesystem) bundled into the boot image |
 
-Both binaries live in `nanvix/bin/` and are downloaded during setup. The extension is `.elf`
-on Linux and `.exe` on Windows; guest binaries always use ELF format.
+These binaries live in `nanvix/bin/` and are downloaded during setup. Host-tool extensions are `.elf`
+on Linux and `.exe` on Windows; guest binaries (the daemons and the runtimes) always use ELF format.
 
 ## Execution Flow
 
 ```text
 1. mkramfs builds the sysroot directory into a FAT32 image
-2. nanvixd boots the microvm:
-   - Loads the runtime binary (e.g. python.elf) as initrd
+2. mkimage builds a multibinary boot image bundling procd, memd, vfsd, and the
+   runtime binary (e.g. python.elf), with the runtime's cmdline embedded
+3. nanvixd boots the microvm:
+   - Loads the multibinary boot image as initrd
+   - The kernel spawns procd, memd, vfsd, then the runtime as servers
    - Mounts the ramfs image at /
-   - Passes program arguments and environment variables
-3. The runtime binary executes the eval wrapper (eval_stdin.py or eval_stdin.js)
-4. The eval wrapper reads base64-encoded user code from stdin
-5. The wrapper decodes and executes the code
-6. stdout and stderr are captured by the host process
-7. The VM exits and the temporary ramfs image is cleaned up
+4. The runtime binary executes the eval wrapper (eval_stdin.py or eval_stdin.js)
+5. The eval wrapper reads base64-encoded user code from stdin
+6. The wrapper decodes and executes the code
+7. stdout and stderr are captured by the host process
+8. The VM exits and the temporary work directory is cleaned up
 ```
+
+> **Why bundle the daemons?** Guest filesystem syscalls (`open`, `read`, `getcwd`, …) are IPC
+> messages routed to the VFS daemon (`vfsd`) at a fixed process id. Booting a bare runtime ELF
+> spawns only the runtime — `vfsd` never starts — so every file access fails (`No such process`
+> for QuickJS, `failed to make path absolute` for CPython). Bundling `procd`, `memd`, and `vfsd`
+> ahead of the runtime (in that order, so `vfsd` lands on its expected pid) makes the guest
+> filesystem work.
 
 ### nanvixd Invocation
 
-> **Note:** The examples below use `.elf` (Linux). On Windows, substitute `nanvixd.exe` and
-> `mkramfs.exe` for the host binaries. Guest binaries (`python.elf`, `qjs.elf`) are unchanged.
+> **Note:** The examples below use `.elf` (Linux). On Windows, substitute `nanvixd.exe`,
+> `mkramfs.exe`, and `mkimage.exe` for the host tools. Guest binaries (the daemons,
+> `python.elf`, `qjs.elf`) are unchanged.
 
 ```bash
+# Build the multibinary boot image (cmdline is embedded per entry; mkimage splits
+# each entry on the first ";" only, so the runtime's "<args>;<env>" survives).
+mkimage.elf -o /tmp/boot.img \
+  ./bin/procd.elf\;procd \
+  ./bin/memd.elf\;memd \
+  ./bin/vfsd.elf\;vfsd \
+  "./runtimes/python-sysroot/bin/python.elf;python -B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
+
 nanvixd.elf \
   -bin-dir ./bin \
-  -ramfs /tmp/nanvix-python-<pid>.img \
+  -ramfs /tmp/ramfs.img \
   -- \
-  ./runtimes/python-sysroot/bin/python.elf \
-  "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
+  /tmp/boot.img
 ```
 
 **Arguments:**
 
-- `-bin-dir` — directory containing Nanvix support binaries
+- `-bin-dir` — directory containing Nanvix support binaries (notably the kernel)
 - `-ramfs` — path to the FAT32 image to mount as the guest root filesystem
-- `--` — separator between nanvixd options and the guest program
-- First positional arg — **host** path to the runtime binary (loaded as initrd)
-- Second positional arg — program flags and environment variables, separated by `;`
+- `--` — separator between nanvixd options and the guest boot program
+- Positional arg — **host** path to the multibinary boot image (loaded as initrd)
 
-The format for the combined argument is: `<program-args>;<env-vars>`
+Trailing arguments are ignored for multibinary images: each bundled program's cmdline is embedded
+in the image at build time. The runtime entry's cmdline has the form `<argv0> <program-args>;<env-vars>`.
 
 ## Supported Runtimes
 
@@ -146,13 +165,17 @@ You can bypass the Copilot SDK and run code directly in the sandbox:
 cd nanvix
 ./bin/mkramfs.elf -o /tmp/rootfs.img ./runtimes/python-sysroot
 
+# Build the multibinary boot image (system daemons + runtime)
+./bin/mkimage.elf -o /tmp/boot.img \
+  ./bin/procd.elf\;procd ./bin/memd.elf\;memd ./bin/vfsd.elf\;vfsd \
+  "./runtimes/python-sysroot/bin/python.elf;python -B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
+
 # Encode your script as base64
 echo -n "print('Hello from Nanvix!')" | base64 > /tmp/input.b64
 
 # Run in the sandbox
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python.elf \
-  "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
+  -- /tmp/boot.img \
   < /tmp/input.b64
 ```
 
@@ -162,12 +185,15 @@ echo -n "print('Hello from Nanvix!')" | base64 > /tmp/input.b64
 cd nanvix
 .\bin\mkramfs.exe -o $env:TEMP\rootfs.img .\runtimes\python-sysroot
 
+.\bin\mkimage.exe -o $env:TEMP\boot.img `
+  .\bin\procd.elf";"procd .\bin\memd.elf";"memd .\bin\vfsd.elf";"vfsd `
+  ".\runtimes\python-sysroot\bin\python.elf;python -B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
+
 $code = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("print('Hello from Nanvix!')"))
 $code | Out-File -NoNewline $env:TEMP\input.b64
 
 Get-Content $env:TEMP\input.b64 | .\bin\nanvixd.exe -bin-dir .\bin -ramfs $env:TEMP\rootfs.img `
-  -- .\runtimes\python-sysroot\bin\python.elf `
-  "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
+  -- $env:TEMP\boot.img
 ```
 
 For JavaScript:
@@ -178,11 +204,14 @@ For JavaScript:
 cd nanvix
 ./bin/mkramfs.elf -o /tmp/rootfs.img ./runtimes/quickjs-sysroot
 
+./bin/mkimage.elf -o /tmp/boot.img \
+  ./bin/procd.elf\;procd ./bin/memd.elf\;memd ./bin/vfsd.elf\;vfsd \
+  "./runtimes/quickjs-sysroot/bin/qjs.elf;qjs --std /eval_stdin.js"
+
 echo -n "console.log('Hello from QuickJS!')" | base64 > /tmp/input.b64
 
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/quickjs-sysroot/bin/qjs.elf \
-  "--std /eval_stdin.js;" \
+  -- /tmp/boot.img \
   < /tmp/input.b64
 ```
 
@@ -192,10 +221,13 @@ echo -n "console.log('Hello from QuickJS!')" | base64 > /tmp/input.b64
 cd nanvix
 .\bin\mkramfs.exe -o $env:TEMP\rootfs.img .\runtimes\quickjs-sysroot
 
+.\bin\mkimage.exe -o $env:TEMP\boot.img `
+  .\bin\procd.elf";"procd .\bin\memd.elf";"memd .\bin\vfsd.elf";"vfsd `
+  ".\runtimes\quickjs-sysroot\bin\qjs.elf;qjs --std /eval_stdin.js"
+
 $code = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("console.log('Hello from QuickJS!')"))
 $code | Out-File -NoNewline $env:TEMP\input.b64
 
 Get-Content $env:TEMP\input.b64 | .\bin\nanvixd.exe -bin-dir .\bin -ramfs $env:TEMP\rootfs.img `
-  -- .\runtimes\quickjs-sysroot\bin\qjs.elf `
-  "--std /eval_stdin.js;"
+  -- $env:TEMP\boot.img
 ```

@@ -19,6 +19,16 @@ npx nanvix-copilot --setup --verbose
 npx nanvix-copilot --setup --nanvix-home /opt/nanvix
 ```
 
+## Docker Requirement
+
+Downloads are orchestrated by [`nanvix-zutil`](https://github.com/nanvix/zutils), whose
+`setup` command requires a toolchain image to be supplied via `--with-docker`. nanvix-copilot
+only consumes prebuilt release artifacts (it never compiles inside the container), so the image
+is merely validated and persisted — it is never used for a build. On Linux the image is still
+pulled, so Docker must be installed and on `PATH`. The default image is
+`ghcr.io/nanvix/toolchain-python:latest`; override it with the `NANVIX_DOCKER_IMAGE`
+environment variable.
+
 ## What Gets Downloaded
 
 Setup fetches the latest releases from three GitHub repositories:
@@ -35,7 +45,7 @@ Provides:
 
 ### 2. CPython Runtime (`nanvix/cpython`)
 
-**Asset pattern:** `cpython-microvm-standalone-256mb.tar.bz2`
+**Asset pattern:** `cpython-microvm-standalone-256mb.tar.gz`
 
 Provides a full CPython 3.12 sysroot with the interpreter binary and standard library.
 After extraction, the sysroot is **trimmed** to fit within the 256 MB VM memory limit.

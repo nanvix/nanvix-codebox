@@ -1,9 +1,7 @@
-import { createWriteStream } from "node:fs";
-import { mkdir, access, stat, writeFile, readFile, rm, cp, rename, readdir, unlink } from "node:fs/promises";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { mkdir, access, stat, writeFile, readFile, rm, cp, readdir } from "node:fs/promises";
+import { execSync, spawnSync } from "node:child_process";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync } from "node:zlib";
 import { PYTHON_EVAL_WRAPPER, JS_EVAL_WRAPPER } from "./sandbox.js";
 import { IS_WINDOWS, hostBinaryName } from "./platform.js";
@@ -11,15 +9,12 @@ import { IS_WINDOWS, hostBinaryName } from "./platform.js";
 // VM memory tier — 256MB on all platforms.
 const VM_MEMORY_TIER = "256mb";
 
-interface ReleaseAsset {
-    name: string;
-    browser_download_url: string;
-}
-
-interface GitHubRelease {
-    tag_name: string;
-    assets: ReleaseAsset[];
-}
+// Docker image passed to `nanvix-zutil setup --with-docker`. nanvix-zutil's
+// setup subcommand requires a toolchain image, but nanvix-copilot is
+// download-only (it never compiles inside the container), so the image is
+// validated/persisted but never used for a build. Override via the
+// NANVIX_DOCKER_IMAGE environment variable if needed.
+const DEFAULT_DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-python:latest";
 
 interface SetupOptions {
     nanvixHome: string;
@@ -153,161 +148,76 @@ async function createDeflatedZip(dirPath: string, outputPath: string): Promise<v
     await writeFile(outputPath, Buffer.concat([...parts, ...cdEntries, eocd]));
 }
 
-async function fetchLatestRelease(repo: string): Promise<GitHubRelease> {
-    const url = `https://api.github.com/repos/${repo}/releases/latest`;
-    const response = await fetch(url, {
-        headers: {
-            Accept: "application/vnd.github.v3+json",
-            ...(process.env.GITHUB_TOKEN
-                ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-                : {}),
-        },
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch release from ${repo}: ${response.status} ${response.statusText}`);
+/**
+ * Invoke `./z setup` (nanvix_zutil) to download and extract all
+ * dependencies into `.nanvix/`.  The bootstrap scripts auto-install
+ * nanvix-zutil into `.nanvix/venv/` when it is not already present.
+ *
+ * nanvix-zutil's `setup` subcommand requires a `--with-docker IMAGE`
+ * argument (the image is persisted for later build/release commands).
+ * nanvix-copilot never builds inside the container, so the image is only
+ * used to satisfy the CLI; on Linux it is still pulled by zutil.
+ */
+function runZutilSetup(projectRoot: string, verbose: boolean): void {
+    const env = { ...process.env };
+    // Normalize token so zutils picks it up consistently.
+    if (!env.GH_TOKEN && env.GITHUB_TOKEN) {
+        env.GH_TOKEN = env.GITHUB_TOKEN;
     }
 
-    return (await response.json()) as GitHubRelease;
-}
+    const dockerImage = env.NANVIX_DOCKER_IMAGE || DEFAULT_DOCKER_IMAGE;
+    const setupArgs = ["setup", "--with-docker", dockerImage];
 
-function findAsset(release: GitHubRelease, pattern: RegExp): ReleaseAsset {
-    const asset = release.assets.find((a) => pattern.test(a.name));
-    if (!asset) {
-        const names = release.assets.map((a) => a.name).join(", ");
-        throw new Error(
-            `No asset matching ${pattern} found in release ${release.tag_name}. Available: ${names}`
-        );
+    const result = IS_WINDOWS
+        ? spawnSync(
+              "powershell.exe",
+              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(projectRoot, "z.ps1"), ...setupArgs],
+              { cwd: projectRoot, env, stdio: verbose ? "inherit" : "pipe" },
+          )
+        : spawnSync(
+              "bash",
+              [path.join(projectRoot, "z.sh"), ...setupArgs],
+              { cwd: projectRoot, env, stdio: verbose ? "inherit" : "pipe" },
+          );
+
+    if (result.status !== 0) {
+        const stderr = result.stderr ? result.stderr.toString().trim() : "";
+        throw new Error(`nanvix-zutil setup failed (exit ${result.status})${stderr ? ": " + stderr : ""}`);
     }
-    return asset;
-}
-
-async function downloadAndExtract(
-    asset: ReleaseAsset,
-    destDir: string,
-    verbose: boolean
-): Promise<void> {
-    const archivePath = path.join(destDir, asset.name);
-
-    if (verbose) {
-        console.error(`[setup] Downloading ${asset.name}...`);
-    }
-
-    // Download.
-    const response = await fetch(asset.browser_download_url, {
-        headers: process.env.GITHUB_TOKEN
-            ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-            : {},
-    });
-
-    if (!response.ok || !response.body) {
-        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-    }
-
-    const fileStream = createWriteStream(archivePath);
-    await pipeline(Readable.fromWeb(response.body as any), fileStream);
-
-    if (verbose) {
-        const info = await stat(archivePath);
-        console.error(`[setup] Downloaded ${(info.size / 1024 / 1024).toFixed(1)} MB`);
-    }
-
-    // Extract.
-    if (verbose) {
-        console.error(`[setup] Extracting ${asset.name}...`);
-    }
-
-    if (archivePath.endsWith(".zip")) {
-        // Use tar (bsdtar on Windows) which handles zip files.
-        execSync(`tar -xf "${archivePath}" -C "${destDir}"`, {
-            stdio: verbose ? "inherit" : "pipe",
-        });
-    } else {
-        // .tar.bz2 or .tar.gz — works on both Linux (GNU tar) and Windows 10+ (bsdtar).
-        // On Windows, tar may emit non-fatal warnings for Unix symlinks it
-        // cannot create.  These symlinks (e.g. python3 → python3.12) are
-        // non-essential and trimmed during sysroot cleanup, so we allow the
-        // extraction to continue despite errors.
-        const tarFlag = archivePath.endsWith(".tar.bz2") ? "-xjf" : "-xzf";
-        try {
-            execSync(`tar ${tarFlag} "${archivePath}" -C "${destDir}"`, {
-                stdio: verbose ? "inherit" : "pipe",
-            });
-        } catch {
-            // Verify that at least some files were extracted before swallowing
-            // the error.  If the directory is still empty, re-throw.
-            const entries = await readdir(destDir);
-            // Only the archive file itself is present → extraction truly failed.
-            if (entries.length <= 1) {
-                throw new Error(`Extraction failed for ${path.basename(archivePath)}`);
-            }
-            if (verbose) {
-                console.error("[setup] tar completed with warnings (expected on Windows for symlinks)");
-            }
-        }
-    }
-
-    // Clean up archive file.
-    await unlink(archivePath);
 }
 
 /**
- * Download and set up Nanvix sandbox binaries and runtime sysroots.
+ * Set up Nanvix sandbox binaries and runtime sysroots.
  *
- * For each runtime, we:
- *   1. Download the release tarball/zip (contains sysroot with binary + stdlib)
- *   2. Extract the sysroot directory under nanvixHome/runtimes/<name>-sysroot/
- *
- * At execution time, the sandbox runner writes the user script into the
- * sysroot, runs mkramfs to package it, then invokes nanvixd.
+ * Dependencies are downloaded by nanvix_zutil (``./z setup``), which
+ * extracts them into ``.nanvix/``.  This function copies the results
+ * into ``nanvixHome`` and applies copilot-specific post-processing
+ * (stdlib allowlist, compressed zip, eval wrappers).
  */
 export async function setup(options: SetupOptions): Promise<void> {
     const { nanvixHome, verbose = false } = options;
 
+    // Locate the project root (where z.sh / .nanvix/ live).
+    const thisFile = fileURLToPath(import.meta.url);
+    const projectRoot = path.resolve(path.dirname(thisFile), "..");
+    const nanvixDir = path.join(projectRoot, ".nanvix");
+
     await mkdir(nanvixHome, { recursive: true });
     await mkdir(path.join(nanvixHome, "runtimes"), { recursive: true });
 
-    const stagingDir = path.join(nanvixHome, ".staging");
-    await mkdir(stagingDir, { recursive: true });
+    // 1. Run nanvix_zutil to download sysroot + runtimes into .nanvix/.
+    console.error("[setup] Running nanvix-zutil setup...");
+    runZutilSetup(projectRoot, verbose);
 
-    console.error("[setup] Fetching latest releases...");
-
-    // 1. Download Nanvix sandbox.
-    //    Linux:   nanvix-x86-microvm-standalone-release-256mb-*.tar.bz2
-    //    Windows: nanvix-windows-x86-microvm-standalone-release-256mb-*.zip
-    const nanvixRelease = await fetchLatestRelease("nanvix/nanvix");
-    const nanvixAssetPattern = IS_WINDOWS
-        ? new RegExp(`nanvix-windows-x86-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.zip$`)
-        : new RegExp(`nanvix-x86-microvm-standalone-release-${VM_MEMORY_TIER}-.*\\.tar\\.bz2$`);
-    const nanvixAsset = findAsset(nanvixRelease, nanvixAssetPattern);
-
-    await downloadAndExtract(nanvixAsset, stagingDir, verbose);
-
-    // Copy extracted binaries into nanvixHome.
-    //
-    // Linux archives contain a directory tree (bin/, etc/, lib/). We locate
-    // the bin/ directory and copy the parent tree.
-    //
-    // Windows archives contain flat files (*.exe, *.elf, *.img) in the
-    // archive root.  We create bin/ and copy all binaries into it.
-    const nanvixBinDir = await findDirectory(stagingDir, "bin");
-    if (nanvixBinDir) {
-        // Linux layout — copy the whole tree.
-        const nanvixRoot = path.dirname(nanvixBinDir);
-        await cp(nanvixRoot, nanvixHome, { recursive: true });
-    } else if (IS_WINDOWS) {
-        // Windows flat layout — stage binaries into bin/.
-        const binDir = path.join(nanvixHome, "bin");
-        await mkdir(binDir, { recursive: true });
-        const entries = await readdir(stagingDir, { withFileTypes: true });
-        for (const entry of entries) {
-            if (entry.isFile()) {
-                await cp(
-                    path.join(stagingDir, entry.name),
-                    path.join(binDir, entry.name),
-                );
-            }
-        }
+    // 2. Copy Nanvix sysroot binaries into nanvixHome.
+    console.error("[setup] Installing Nanvix sysroot...");
+    const sysrootDir = path.join(nanvixDir, "sysroot");
+    const sysrootBinDir = await findDirectory(sysrootDir, "bin");
+    if (sysrootBinDir) {
+        const sysrootRoot = path.dirname(sysrootBinDir);
+        await cp(sysrootRoot, nanvixHome, { recursive: true });
+    } else {
+        throw new Error(`Nanvix sysroot bin/ not found under ${sysrootDir}`);
     }
 
     const mkramfs = path.join(nanvixHome, "bin", hostBinaryName("mkramfs"));
@@ -315,79 +225,38 @@ export async function setup(options: SetupOptions): Promise<void> {
         throw new Error(`${hostBinaryName("mkramfs")} not found at ${mkramfs}`);
     }
 
-    // Clean staging for runtime downloads.
-    await rm(stagingDir, { recursive: true, force: true });
-    await mkdir(stagingDir, { recursive: true });
-
-    // 2. Download CPython runtime (microvm, standalone, matching VM tier).
-    //    Same tarball on all platforms — stdlib is pure Python (.py) and the
-    //    guest binary is always ELF (runs inside the Nanvix microvm).
+    // 3. Process CPython runtime.
     console.error("[setup] Setting up Python runtime...");
-    const cpythonRelease = await fetchLatestRelease("nanvix/cpython");
-    const cpythonAsset = findAsset(
-        cpythonRelease,
-        new RegExp(`cpython-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.bz2$`)
-    );
-
-    await downloadAndExtract(cpythonAsset, stagingDir, verbose);
-
-    // The CPython 256MB tarball extracts to:
-    //   sysroot/lib/python3.12/   — stdlib sources
-    //   bin/python.elf            — guest binary (outside sysroot/)
-    // We reassemble them into python-sysroot/ with bin/ and lib/.
-    const cpythonSysroot = path.join(stagingDir, "sysroot");
+    const cpythonDir = path.join(nanvixDir, "runtimes", "cpython");
     const pythonSysrootDest = path.join(nanvixHome, "runtimes", "python-sysroot");
 
-    if (await fileExists(cpythonSysroot)) {
+    if (await fileExists(cpythonDir)) {
         await rm(pythonSysrootDest, { recursive: true, force: true });
-        await rename(cpythonSysroot, pythonSysrootDest);
+        await mkdir(pythonSysrootDest, { recursive: true });
 
-        // The guest binary (python.elf) may be outside sysroot/ in the tarball.
-        // Locate it in staging and move it into the sysroot bin/ directory.
-        const stagedBin = await findFile(stagingDir, (name) => name === "python.elf");
-        if (stagedBin) {
-            const sysrootBinDir = path.join(pythonSysrootDest, "bin");
-            await mkdir(sysrootBinDir, { recursive: true });
-            await cp(stagedBin, path.join(sysrootBinDir, "python.elf"));
+        // Copy python.elf into the sysroot.
+        const pythonElf = await findFile(cpythonDir, (name) => name === "python.elf");
+        if (!pythonElf) {
+            throw new Error("python.elf not found in CPython runtime");
         }
+        const sysrootBin = path.join(pythonSysrootDest, "bin");
+        await mkdir(sysrootBin, { recursive: true });
+        await cp(pythonElf, path.join(sysrootBin, "python.elf"));
 
-        // Trim the Python sysroot to fit in the VM.
-        // Empirically, mkramfs adds ~43% filesystem overhead (block alignment,
-        // metadata) and the image is 2× content, so image ≈ 2.86× file sizes.
-        // For a 256MB VM, file sizes must stay under ~89MB.
-        console.error(`[setup] Trimming Python sysroot for ${VM_MEMORY_TIER.toUpperCase()} VM...`);
-
-        // Phase 1: Remove top-level build artifacts and development files.
-        for (const target of ["include", "share", "lib/pkgconfig"]) {
-            await rm(path.join(pythonSysrootDest, target), { recursive: true, force: true }).catch(() => { });
+        // Copy the stdlib tree.  The upstream tarball is already trimmed by
+        // zutils (idlelib, tkinter, etc. removed).  We copy it so that the
+        // copilot-specific allowlist (below) can further reduce it.
+        const cpythonSysroot = await findDirectory(cpythonDir, "sysroot");
+        const cpythonLibDir = cpythonSysroot
+            ? await findDirectory(cpythonSysroot, "python3.12")
+            : undefined;
+        if (!cpythonLibDir) {
+            throw new Error("python3.12 stdlib not found in CPython runtime");
         }
+        const destLib = path.join(pythonSysrootDest, "lib", "python3.12");
+        await cp(cpythonLibDir, destLib, { recursive: true });
 
-        // Phase 2: Remove everything from lib/ except the python3.12/ directory.
-        // The standalone binary is statically linked — no shared/static libs needed.
-        const libDir = path.join(pythonSysrootDest, "lib");
-        if (await fileExists(libDir)) {
-            const libEntries = await readdir(libDir, { withFileTypes: true });
-            for (const entry of libEntries) {
-                if (entry.name !== "python3.12") {
-                    await rm(path.join(libDir, entry.name), { recursive: true, force: true });
-                }
-            }
-        }
-
-        // Phase 3: Clean bin/ — keep only the python.elf interpreter binary.
-        const binDir = path.join(pythonSysrootDest, "bin");
-        if (await fileExists(binDir)) {
-            const binEntries = await readdir(binDir, { withFileTypes: true });
-            for (const entry of binEntries) {
-                if (entry.name !== "python.elf") {
-                    await rm(path.join(binDir, entry.name), { recursive: true, force: true });
-                }
-            }
-        }
-
-        // Phase 4: Strip debug symbols from the Python binary.
-        // Try llvm-strip first (handles ELF on any host, including Windows),
-        // then fall back to strip (Linux/macOS).
+        // Strip debug symbols from the Python binary.
         const pythonBin = path.join(pythonSysrootDest, "bin", "python.elf");
         if (await fileExists(pythonBin)) {
             let stripped = false;
@@ -403,9 +272,7 @@ export async function setup(options: SetupOptions): Promise<void> {
             }
         }
 
-        // Phase 5: Allowlist for lib/python3.12/ — keep only essential modules.
-        // Uses an allowlist instead of a blacklist so the sysroot stays small
-        // regardless of what the upstream CPython release ships.
+        // Allowlist for lib/python3.12/ — keep only essential modules.
         const pyLibDir = path.join(pythonSysrootDest, "lib", "python3.12");
         if (await fileExists(pyLibDir)) {
             const allowedFiles = new Set([
@@ -478,8 +345,7 @@ export async function setup(options: SetupOptions): Promise<void> {
                 }
             }
 
-            // Prune encodings/ to essential codecs only (saves ~1.5MB of small files
-            // that also cause disproportionate ramfs block-alignment waste).
+            // Prune encodings/ to essential codecs only.
             const encodingsDir = path.join(pyLibDir, "encodings");
             if (await fileExists(encodingsDir)) {
                 const essentialEncodings = new Set([
@@ -504,23 +370,15 @@ export async function setup(options: SetupOptions): Promise<void> {
             await rm(path.join(pyLibDir, "importlib", "metadata"), { recursive: true, force: true }).catch(() => { });
         }
 
-        // Phase 6: Remove __pycache__ dirs (Python runs from .py sources).
+        // Defensive cleanup: remove __pycache__ before zipping.
         await removeDirectoriesByName(pythonSysrootDest, "__pycache__");
 
-        // Phase 7: Create the ramfs directory structure.
-        // The python.elf binary is loaded by nanvixd via the host path (not from
-        // the ramfs), so we exclude it from the ramfs to save ~36MB. Only the
-        // stdlib zip and eval wrapper go into the ramfs.
+        // Create the ramfs directory structure.
         const ramfsDir = path.join(pythonSysrootDest, "ramfs");
         const ramfsLibDir = path.join(ramfsDir, "lib");
         await mkdir(ramfsLibDir, { recursive: true });
 
-        // Phase 7b: Consolidate stdlib into a compressed zip in the ramfs.
-        // Python automatically adds lib/python312.zip to sys.path at startup
-        // (see CPython Modules/getpath.py). This replaces ~50 loose files with
-        // one deflate-compressed zip file, saving both per-file ramfs overhead
-        // (~14MB of block-alignment waste) and raw file size (~60-70% compression
-        // on .py text).
+        // Consolidate stdlib into a compressed zip in the ramfs.
         const pyLibDir312 = path.join(pythonSysrootDest, "lib", "python3.12");
         const stdlibZipPath = path.join(ramfsLibDir, "python312.zip");
         if (await fileExists(pyLibDir312)) {
@@ -528,21 +386,16 @@ export async function setup(options: SetupOptions): Promise<void> {
             await rm(pyLibDir312, { recursive: true, force: true });
             if (verbose) console.error("[setup] Consolidated stdlib into ramfs/lib/python312.zip");
         }
-        // Remove the original lib/ (now empty or unused).
         await rm(path.join(pythonSysrootDest, "lib"), { recursive: true, force: true }).catch(() => { });
 
-        // Phase 8: Bake the eval wrapper into the ramfs.
+        // Bake the eval wrapper into the ramfs.
         await writeFile(
             path.join(ramfsDir, "eval_stdin.py"),
             PYTHON_EVAL_WRAPPER,
             "utf-8"
         );
 
-        // Phase 9: Validate ramfs content size fits in the VM.
-        // Without the binary, the ramfs only contains the deflate-compressed
-        // stdlib zip (~4MB) and the eval wrapper (<1KB). mkramfs adds fixed
-        // filesystem overhead, then image = 2× content. This should be well
-        // under the VM limit.
+        // Validate ramfs content size fits in the VM.
         const ramfsSize = await directorySize(ramfsDir);
         const ramfsMB = ramfsSize / 1024 / 1024;
         const vmSizeMB = parseInt(VM_MEMORY_TIER, 10);
@@ -559,59 +412,47 @@ export async function setup(options: SetupOptions): Promise<void> {
             );
         }
     } else {
-        console.error("[setup] WARNING: CPython sysroot not found in release");
+        console.error("[setup] WARNING: CPython runtime not found in .nanvix/runtimes/cpython");
     }
 
-    // Clean staging for next download.
-    await rm(stagingDir, { recursive: true, force: true });
-    await mkdir(stagingDir, { recursive: true });
-
-    // 3. Download QuickJS runtime (microvm, standalone, matching VM tier).
-    //    Guest binary must match the VM memory tier.
+    // 4. Process QuickJS runtime.
     console.error("[setup] Setting up QuickJS runtime...");
-    const quickjsRelease = await fetchLatestRelease("nanvix/quickjs");
-    const quickjsAsset = findAsset(
-        quickjsRelease,
-        new RegExp(`quickjs-microvm-standalone-${VM_MEMORY_TIER}\\.tar\\.gz$`)
-    );
-
-    await downloadAndExtract(quickjsAsset, stagingDir, verbose);
-
-    // QuickJS extracts to quickjs-microvm-standalone-<tier>/ with bin/qjs.elf.
-    // Build a sysroot directory for the sandbox runner.
+    const quickjsDir = path.join(nanvixDir, "runtimes", "quickjs");
     const qjsSysrootDest = path.join(nanvixHome, "runtimes", "quickjs-sysroot");
-    const qjsBin = await findFile(
-        stagingDir,
-        (name) => name === "qjs" || name === "qjs.elf",
-    );
-    if (qjsBin) {
-        await rm(qjsSysrootDest, { recursive: true, force: true });
-        await mkdir(path.join(qjsSysrootDest, "bin"), { recursive: true });
-        // Copy the qjs binary into the sysroot.
-        await cp(qjsBin, path.join(qjsSysrootDest, "bin", path.basename(qjsBin)));
-        // Bake the eval wrapper into the sysroot.
-        await writeFile(
-            path.join(qjsSysrootDest, "eval_stdin.js"),
-            JS_EVAL_WRAPPER,
-            "utf-8"
+
+    if (await fileExists(quickjsDir)) {
+        const qjsBin = await findFile(
+            quickjsDir,
+            (name) => name === "qjs" || name === "qjs.elf",
         );
-        if (verbose) {
-            const size = await directorySize(qjsSysrootDest);
-            console.error(`[setup] QuickJS sysroot: ${(size / 1024 / 1024).toFixed(1)}M (with eval wrapper)`);
+        if (qjsBin) {
+            await rm(qjsSysrootDest, { recursive: true, force: true });
+            await mkdir(path.join(qjsSysrootDest, "bin"), { recursive: true });
+            await cp(qjsBin, path.join(qjsSysrootDest, "bin", path.basename(qjsBin)));
+            await writeFile(
+                path.join(qjsSysrootDest, "eval_stdin.js"),
+                JS_EVAL_WRAPPER,
+                "utf-8"
+            );
+            if (verbose) {
+                const size = await directorySize(qjsSysrootDest);
+                console.error(`[setup] QuickJS sysroot: ${(size / 1024 / 1024).toFixed(1)}M (with eval wrapper)`);
+            }
+        } else {
+            console.error("[setup] NOTE: QuickJS release is SDK-only (no interpreter binary).");
+            console.error("[setup]       JavaScript runtime is not yet available.");
         }
     } else {
-        console.error("[setup] NOTE: QuickJS release is SDK-only (no interpreter binary).");
-        console.error("[setup]       JavaScript runtime is not yet available.");
+        console.error("[setup] WARNING: QuickJS runtime not found in .nanvix/runtimes/quickjs");
     }
 
-    // Clean up staging.
-    await rm(stagingDir, { recursive: true, force: true });
-
-    // Verify core artifacts.
+    // 5. Verify core artifacts.
     const requiredFiles = [
         path.join(nanvixHome, "bin", hostBinaryName("nanvixd")),
         mkramfs,
-        pythonSysrootDest,
+        path.join(pythonSysrootDest, "bin", "python.elf"),
+        path.join(pythonSysrootDest, "ramfs", "lib", "python312.zip"),
+        path.join(pythonSysrootDest, "ramfs", "eval_stdin.py"),
     ];
 
     for (const file of requiredFiles) {
@@ -625,8 +466,7 @@ export async function setup(options: SetupOptions): Promise<void> {
     if (await fileExists(pythonSysrootDest)) {
         console.error("[setup]   - Python:  runtimes/python-sysroot/");
     }
-    const qjsSysroot = path.join(nanvixHome, "runtimes", "quickjs-sysroot");
-    if (await fileExists(qjsSysroot)) {
+    if (await fileExists(qjsSysrootDest)) {
         console.error("[setup]   - QuickJS: runtimes/quickjs-sysroot/");
     }
 }

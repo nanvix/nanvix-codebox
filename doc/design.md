@@ -20,7 +20,9 @@ Copilot SDK (generates code)
     ↓
 Base64 encode → stdin
     ↓
-nanvixd -bin-dir ./bin -ramfs <sysroot.img> -- <host-path-to-binary> "<args>;<env>"
+mkimage bundles procd + memd + vfsd + runtime → boot.img
+    ↓
+nanvixd -bin-dir ./bin -ramfs <sysroot.img> -- <boot.img>
     ↓
 runtime executes eval_stdin wrapper → decodes base64 → exec(user code)
     ↓
@@ -38,15 +40,16 @@ baked into the ramfs during setup. The wrapper:
 
 This means the ramfs only needs to be rebuilt from the cached sysroot directory — the user
 script never touches the filesystem. At execution time, `mkramfs` packages the sysroot
-into a FAT32 ramfs image (mounted at `/` in the guest), `nanvixd` boots the microvm with
-the runtime binary as the initrd, and the base64-encoded code flows through stdin.
+into a FAT32 ramfs image (mounted at `/` in the guest), `mkimage` bundles the system daemons
+(`procd`, `memd`, `vfsd`) and the runtime into a multibinary boot image, `nanvixd` boots the
+microvm with that image as the initrd, and the base64-encoded code flows through stdin.
 
 **Key details:**
 
 - The guest VM is fully isolated by the hypervisor — it has no access to the host filesystem, network, or processes
 - The ramfs image mounts at `/` inside the guest VM
 - `PYTHONHOME=/` (not `/sysroot`) because the ramfs root IS the sysroot
-- The runtime binary (e.g. `python.elf`) is specified by its **host** path — nanvixd loads it as initrd
+- The runtime is bundled with the `procd`/`memd`/`vfsd` daemons in the boot image (in that order, so `vfsd` lands on its expected pid); the daemons are required for the guest to service filesystem syscalls
 - The sysroot is trimmed during setup to ~26MB (from ~160MB) to fit within VM memory
 
 ## How It Works
@@ -83,20 +86,24 @@ The CPython sysroot is trimmed during setup to fit within the VM memory limit:
 ## Running Code Directly (without Copilot)
 
 You can also run Python code directly in the sandbox. The examples below use Linux (bash)
-commands; on Windows, substitute `mkramfs.exe`/`nanvixd.exe` and use PowerShell equivalents
-(see [sandbox.md](sandbox.md#running-code-directly-without-copilot) for PowerShell examples).
+commands; on Windows, substitute `mkramfs.exe`/`mkimage.exe`/`nanvixd.exe` and use PowerShell
+equivalents (see [sandbox.md](sandbox.md#running-code-directly-without-copilot) for PowerShell examples).
 
 ```bash
 # Build the ramfs image from the sysroot
 cd nanvix && ./bin/mkramfs.elf -o /tmp/rootfs.img ./runtimes/python-sysroot
+
+# Build the multibinary boot image (system daemons + runtime)
+./bin/mkimage.elf -o /tmp/boot.img \
+  ./bin/procd.elf\;procd ./bin/memd.elf\;memd ./bin/vfsd.elf\;vfsd \
+  "./runtimes/python-sysroot/bin/python.elf;python -B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1"
 
 # Encode your script as base64
 echo -n "print('Hello from Nanvix!')" | base64 > /tmp/input.b64
 
 # Run in the sandbox (eval wrapper reads base64 from stdin)
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python.elf \
-  "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
+  -- /tmp/boot.img \
   < /tmp/input.b64
 
 # Run Fibonacci example
@@ -110,7 +117,6 @@ for i in range(10):
     print(f"fib({i}) = {fib(i)}")' | base64 > /tmp/fib.b64
 
 ./bin/nanvixd.elf -bin-dir ./bin -ramfs /tmp/rootfs.img \
-  -- ./runtimes/python-sysroot/bin/python.elf \
-  "-B /eval_stdin.py;PYTHONHOME=/ PYTHONDONTWRITEBYTECODE=1" \
+  -- /tmp/boot.img \
   < /tmp/fib.b64
 ```

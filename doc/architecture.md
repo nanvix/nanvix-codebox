@@ -36,7 +36,8 @@ sandbox execution result.
           ▼
  ┌─────────────────┐     ┌─────────────────────────────────────────────┐
  │ Sandbox          │────▶│  mkramfs builds FAT32 image from sysroot,   │
- │ (sandbox.ts)     │     │  nanvixd boots microvm                      │
+ │ (sandbox.ts)     │     │  mkimage bundles daemons + runtime,         │
+ │                 │     │  nanvixd boots microvm                      │
  └────────┬────────┘     └─────────────────────────────────────────────┘
           │
           │  stdin: base64-encoded code
@@ -98,12 +99,17 @@ Executes code in the Nanvix microvm:
 1. Verifies the runtime sysroot exists
 2. Resolves the platform-specific host binary names via `src/platform.ts` (`.elf` on Linux, `.exe` on Windows)
 3. Runs `mkramfs` to build a FAT32 image from the sysroot directory
-4. Base64-encodes the user code
-5. Spawns `nanvixd` with the runtime binary as initrd
-6. Pipes the encoded code through stdin
-7. Captures stdout, stderr, and the exit code
-8. Enforces a 120-second timeout
-9. Cleans up the temporary ramfs image
+4. Runs `mkimage` to build a multibinary boot image bundling the system daemons
+   (`procd`, `memd`, `vfsd`) and the runtime binary, with the runtime's cmdline embedded
+5. Base64-encodes the user code
+6. Spawns `nanvixd` with the multibinary boot image as initrd
+7. Pipes the encoded code through stdin
+8. Captures stdout, stderr, and the exit code
+9. Enforces a 120-second timeout
+10. Cleans up the temporary work directory (ramfs + boot image)
+
+> The system daemons must be bundled into the boot image: guest filesystem syscalls are routed
+> to `vfsd`, so booting the bare runtime ELF (which leaves `vfsd` unspawned) breaks all file access.
 
 ### Encoding — `src/encoding.ts`
 
@@ -114,7 +120,8 @@ to the sandbox. Wraps Node.js `Buffer` operations.
 
 Downloads and prepares all sandbox components from GitHub Releases:
 
-1. **Nanvix microvm** — `nanvixd` and `mkramfs` (`.elf` on Linux, `.exe` on Windows)
+1. **Nanvix microvm** — `nanvixd`, `mkramfs`, `mkimage`, and the guest daemons
+   `procd`/`memd`/`vfsd` (host tools are `.elf` on Linux, `.exe` on Windows)
 2. **CPython sysroot** — Python 3.12 binary + trimmed standard library
 3. **QuickJS sysroot** — `qjs.elf` binary
 
